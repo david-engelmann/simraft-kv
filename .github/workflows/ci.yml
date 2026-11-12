@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Seed volume per DECISIONS Q6: 1,000 seeds per PR, 10,000 seeds on main.
+# PROPTEST_CASES drives proptest case counts. SIM_SEED is the base seed for
+# simulator sweeps; each job derives per-seed values from its matrix index.
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTDOCFLAGS: "-D warnings"
+
+jobs:
+  docs-and-determinism-guards:
+    name: Docs and determinism guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: No em dashes in public copy
+        run: |
+          python3 - <<'PY'
+          import pathlib, sys
+          bad = []
+          for p in pathlib.Path('.').rglob('*.md'):
+              if '.git' in p.parts:
+                  continue
+              text = p.read_text(encoding='utf-8')
+              for i, line in enumerate(text.splitlines(), 1):
+                  if '\u2014' in line:
+                      bad.append(f"{p}:{i}")
+          if bad:
+              print("em dash found in public copy:")
+              print("\n".join(bad))
+              sys.exit(1)
+          print("no em dashes in markdown")
+          PY
+      - name: DECISIONS.md present and locked
+        run: |
+          test -f DECISIONS.md
+          test -f docs/ARCHITECTURE.md
+          test -f docs/INVARIANTS.md
+          grep -q "LOCKED by David 2026-11-12" DECISIONS.md
+      - name: Forbidden nondeterminism identifiers in deterministic crates
+        run: |
+          # Arms at M1 when the crates exist. At M0 (docs only) it is a no-op.
+          # Test inputs and comments are excluded; see docs/INVARIANTS.md D-02.
+          if [ -d crates ] || [ -f Cargo.toml ]; then
+            ! grep -rnE "std::collections::(HashMap|HashSet)|SystemTime|Instant::now|thread_rng|OsRng" \
+              --include='*.rs' simraft-core simraft-kv simraft-sim 2>/dev/null \
+              | grep -vE "^\s*[^:]+:[0-9]+:\s*//" || exit 1
+          else
+            echo "M0 docs-only tree: determinism source guard arms at M1"
+          fi
+
+  rust-gates:
+    name: Rust gates (fmt, clippy, doc, test, bench smoke)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.91.1"
+          components: rustfmt, clippy
+      - name: Cargo gates
+        run: |
+          if [ ! -f Cargo.toml ]; then
+            echo "M0 docs-only tree: no Cargo.toml yet, cargo gates arm at M1"
+            exit 0
+          fi
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features -- -D warnings
+          cargo doc --workspace --no-deps
+          cargo test --workspace
+          cargo bench --workspace -- --test
+
+  seed-sweep:
+    name: Seed sweep (simulator and property volume)
+    runs-on: ubuntu-latest
+    env:
+      PROPTEST_CASES: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
+      SEED_COUNT: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.91.1"
+          components: rustfmt, clippy
+      - name: Run seed sweep
+        run: |
+          if [ ! -f Cargo.toml ]; then
+            echo "M0 docs-only tree: seed sweep arms at M4 when simraft-sim exists"
+            echo "Configured volume for this event: SEED_COUNT=$SEED_COUNT PROPTEST_CASES=$PROPTEST_CASES"
+            exit 0
+          fi
+          cargo test --workspace
+          if [ -f simraft-sim/Cargo.toml ] || grep -q "simraft-sim" Cargo.toml; then
+            cargo build -p simraft-sim --release
+            # One process per seed batch; each run prints its seed (D-03) and
+            # a final state digest (D-01). A nonzero exit fails the job.
+            step=100
+            for (( base=0; base<SEED_COUNT; base+=step )); do
+              SIM_SEED=$base ./target/release/simraft-sim \
+                --seed "$base" --seeds "$step" --json > "sweep-$base.json"
+              head -1 "sweep-$base.json"
+            done
+          fi
