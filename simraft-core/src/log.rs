@@ -43,7 +43,7 @@ pub struct LogEntry {
 
 impl LogEntry {
     /// An approximate encoded size of this entry, used to enforce the
-    /// AppendEntries byte budget.
+    /// `AppendEntries` byte budget.
     #[must_use]
     pub fn approx_len(&self) -> usize {
         match &self.kind {
@@ -100,7 +100,7 @@ impl Log {
         if index < self.base_index || index > self.last_index() {
             return None;
         }
-        let pos = (index.0 - self.base_index.0 - 1) as usize;
+        let pos = self.pos_of(index);
         self.entries.get(pos).map(|e| e.term)
     }
 
@@ -111,8 +111,16 @@ impl Log {
         if index <= self.base_index || index > self.last_index() {
             return None;
         }
-        let pos = (index.0 - self.base_index.0 - 1) as usize;
+        let pos = self.pos_of(index);
         self.entries.get(pos)
+    }
+
+    /// The vector position of `index`. Callers have already bounds
+    /// checked `index` against the in-memory entry vector, so the
+    /// offset always fits in a `usize`.
+    fn pos_of(&self, index: LogIndex) -> usize {
+        usize::try_from(index.0 - self.base_index.0 - 1)
+            .expect("a bounds-checked log offset always fits in usize")
     }
 
     /// Append entries at the tail. Returns the index of the first
@@ -129,24 +137,41 @@ impl Log {
         if index <= self.base_index {
             return;
         }
-        let keep = (index.0 - self.base_index.0 - 1) as usize;
+        let keep = self.pos_of(index);
         self.entries.truncate(keep);
     }
 
     /// The first index whose entry carries `term`, if any.
     #[must_use]
     pub fn first_index_of_term(&self, term: Term) -> Option<LogIndex> {
-        // Terms are non-decreasing along the log, so binary search finds
-        // the boundaries. Completed at M1 Stage B.
-        let _ = term;
-        None
+        // Terms are non-decreasing along a Raft log, so the run of any
+        // term is one contiguous span found by binary search.
+        if term == self.base_term && self.base_index != LogIndex::ZERO {
+            return Some(self.base_index);
+        }
+        let start = self.entries.partition_point(|e| e.term < term);
+        match self.entries.get(start) {
+            Some(entry) if entry.term == term => {
+                Some(LogIndex(self.base_index.0 + start as u64 + 1))
+            }
+            _ => None,
+        }
     }
 
     /// The last index whose entry carries `term`, if any.
     #[must_use]
     pub fn last_index_of_term(&self, term: Term) -> Option<LogIndex> {
-        let _ = term;
-        None
+        let end = self.entries.partition_point(|e| e.term <= term);
+        if end == 0 {
+            if term == self.base_term && self.base_index != LogIndex::ZERO {
+                return Some(self.base_index);
+            }
+            return None;
+        }
+        match self.entries.get(end - 1) {
+            Some(entry) if entry.term == term => Some(LogIndex(self.base_index.0 + end as u64)),
+            _ => None,
+        }
     }
 
     /// Up to `max_count` entries starting at `index`, bounded also by the
@@ -162,7 +187,7 @@ impl Log {
         if index <= self.base_index || index > self.last_index() {
             return Vec::new();
         }
-        let start = (index.0 - self.base_index.0 - 1) as usize;
+        let start = self.pos_of(index);
         let mut out = Vec::new();
         let mut bytes = 0_usize;
         for entry in self.entries.iter().skip(start) {

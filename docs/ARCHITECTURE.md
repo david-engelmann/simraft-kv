@@ -132,14 +132,21 @@ docs, and build documentation with RUSTDOCFLAGS set to deny warnings.
 
 ```text
 Event::Tick { now: Tick }
-Event::Propose { client_id: ClientId, seq: u64, op: KvOp }
+Event::Propose { client_id: ClientId, seq: u64, payload: Vec<u8> }
 Event::ProposeConfig { change: ConfigChange }
 Event::ReadIndex { request_id: u64, key: Vec<u8> }
 Event::Message { from: NodeId, msg: Message }
 Event::Persisted { kind: PersistKind, up_to_index: LogIndex }
 Event::SnapshotPersisted { meta: SnapshotMeta }
-Event::Restored { hard_state: HardState, snapshot: Option<SnapshotMeta> }
+Event::Restored { hard_state: HardState, entries: Vec<LogEntry> }
 ```
+
+As built at M1: the event and action enums carry the variants M1
+implements (Tick, Propose, Message, Persisted, Restored). ProposeConfig,
+ReadIndex, and SnapshotPersisted arrive at their milestones (M3, M2, M3).
+Propose carries the canonical command payload bytes produced by
+simraft-kv rather than a KV operation type: the core is KV-agnostic, and
+the client identity travels alongside the payload for deduplication.
 
 Tick is a u64 count of virtual milliseconds supplied by the driver. The core
 compares Tick values only against deadlines it computed from its own config
@@ -295,8 +302,11 @@ conflicting term in the follower's log (or the follower's last index + 1
 when its log is too short), and conflict_term is the term at that index
 when one exists. The leader then sets that follower's next_index to the
 last index of conflict_term in its own log when it has that term, else to
-conflict_index. This turns worst-case backup from one index per round trip
-into one term per round trip.
+conflict_index. (As built at M1: the leader's resulting next_index is one
+past its last index of conflict_term, the standard form; the follower's
+contiguous verified prefix is what the next probe must match.) This turns
+worst-case backup from one index per round trip into one term per round
+trip.
 
 match_index updates are monotonic. An AppendEntriesResponse carries the
 follower's match_index as of that append; the leader applies
@@ -806,6 +816,14 @@ docs/INVARIANTS.md is the normative matrix. In outline:
 | M2 | Figure 8 commit, ReadIndex, KV state machine, session deduplication | 6.3, 8, 10 |
 | M3 | Snapshots, chunked InstallSnapshot, single-server membership | 7.4, 9, plus log truncation in 5.2 |
 | M4 | Simulator, oracles, linearizability checker, CLI, seed sweeps in CI, README and CONTRIBUTING | 12, 13, 15 |
+
+Status at the M1 gate: M1 is implemented as described (simraft-core
+protocol plus config validation; simraft-kv and simraft-sim are the
+documented placeholders their milestones fill). The Figure 8
+current-term-only commitment rule is implemented in the core from M1
+because replication correctness depends on it; its dedicated property
+suite and the ReadIndex machinery that builds on it land at M2 as
+scheduled.
 
 Each implementation milestone runs in two stages. Stage A lands public
 interfaces, doc comments, structural assertions, and property or fault tests

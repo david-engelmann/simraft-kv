@@ -1,8 +1,8 @@
 //! Cluster configuration representation.
 //!
 //! At M1 the configuration is static: it is supplied at node construction
-//! and never changes. Single-server configuration changes (AddLearner,
-//! PromoteVoter, RemoveVoter) land at M3 and extend this module; the
+//! and never changes. Single-server configuration changes (`AddLearner`,
+//! `PromoteVoter`, `RemoveVoter`) land at M3 and extend this module; the
 //! representation and the quorum arithmetic they rely on live here from
 //! the start, so every quorum decision at every milestone is computed
 //! against exactly one `ClusterConfig` (invariant M-05).

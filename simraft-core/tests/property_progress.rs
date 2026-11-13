@@ -1,8 +1,11 @@
 //! Monotonic replication progress (invariant S-07): stale, reordered
-//! AppendEntries responses never move match_index or next_index
+//! `AppendEntries` responses never move `match_index` or `next_index`
 //! backwards on the leader.
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use simraft_core::{Event, LogIndex, Message, Node, NodeId, Term};
@@ -16,6 +19,25 @@ fn leader_with_peers() -> Node {
     )
     .unwrap();
     let _ = common::elect(&mut node, &[NodeId(2), NodeId(3)]);
+    // Acknowledge the election NoOp persist, then append four client
+    // entries so the leader's log honestly holds five entries: a
+    // follower can only report a match index the leader's log covers.
+    let _ = node.step(Event::Persisted {
+        kind: simraft_core::PersistKind::Entries,
+        up_to_index: LogIndex(1),
+    });
+    for seq in 1_u64..=4 {
+        let _ = node.step(Event::Propose {
+            client_id: simraft_core::ClientId(1),
+            seq,
+            payload: vec![u8::try_from(seq).expect("test sequence numbers fit in u8")],
+        });
+        let _ = node.step(Event::Persisted {
+            kind: simraft_core::PersistKind::Entries,
+            up_to_index: LogIndex(1 + seq),
+        });
+    }
+    assert_eq!(node.log().last_index(), LogIndex(5));
     node
 }
 

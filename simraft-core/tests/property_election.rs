@@ -1,7 +1,10 @@
 //! Election safety properties (invariants S-01, S-09, S-10), exercised
 //! over seeded cluster runs and direct message sequences.
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use common::Harness;
@@ -21,9 +24,7 @@ fn one_leader_per_term() {
             let mut by_term: BTreeMap<Term, NodeId> = BTreeMap::new();
             for (id, term) in harness.leaders() {
                 if let Some(other) = by_term.insert(term, id) {
-                    panic!(
-                        "seed {seed} tick {now}: two leaders in {term}: {other} and {id}"
-                    );
+                    panic!("seed {seed} tick {now}: two leaders in {term}: {other} and {id}");
                 }
             }
             now += 25;
@@ -172,16 +173,18 @@ fn stale_log_candidate_is_refused() {
                 up_to_index: LogIndex(0),
             }));
         }
-        let granted = all.iter().any(|a| matches!(
-            a,
-            Action::Send {
-                msg: Message::RequestVoteResponse {
-                    vote_granted: true,
+        let granted = all.iter().any(|a| {
+            matches!(
+                a,
+                Action::Send {
+                    msg: Message::RequestVoteResponse {
+                        vote_granted: true,
+                        ..
+                    },
                     ..
-                },
-                ..
-            }
-        ));
+                }
+            )
+        });
         assert_eq!(
             granted, expected,
             "candidate tip (index {idx}, term {term}) against voter tip (3, 2)"

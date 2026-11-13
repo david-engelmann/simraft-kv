@@ -1,7 +1,10 @@
 //! Property tests for Pre-Vote purity and the hypothetical term
 //! (invariants T-03, T-04, and the recency half of T-05).
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use simraft_core::{Action, Event, Message, Node, NodeId, Role, Term};
@@ -47,7 +50,11 @@ fn prevote_leaves_hard_state_and_timer_untouched() {
         )),
         "an up-to-date pre-candidate with no live leader must be granted, got {actions:?}"
     );
-    assert_eq!(voter.current_term(), term_before, "pre-vote changed the term");
+    assert_eq!(
+        voter.current_term(),
+        term_before,
+        "pre-vote changed the term"
+    );
     assert_eq!(voter.voted_for(), vote_before, "pre-vote recorded a vote");
     assert_eq!(
         voter.poll_timeout(),

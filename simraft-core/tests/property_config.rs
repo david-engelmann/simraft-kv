@@ -1,7 +1,10 @@
 //! Property tests for configuration validation and election timer
 //! randomization (invariants T-01 and T-06).
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use proptest::prelude::*;

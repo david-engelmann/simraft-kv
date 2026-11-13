@@ -1,13 +1,16 @@
 //! Log safety properties (invariants S-02, S-03, S-08) over seeded
 //! cluster runs and direct message sequences.
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use common::Harness;
 use simraft_core::{
-    Action, ClientId, EntryKind, Event, HardState, LogEntry, LogIndex, Message, Node, NodeId,
-    Role, Term,
+    Action, ClientId, EntryKind, Event, HardState, LogEntry, LogIndex, Message, Node, NodeId, Role,
+    Term,
 };
 
 fn entries_with_terms(terms: &[u64]) -> Vec<LogEntry> {
@@ -29,21 +32,19 @@ fn leader_log_is_append_only() {
     let leader_id = leaders[0].0;
     // Propose entries through the leader while watching its log: after
     // every step the previously observed prefix must be intact.
-    let mut observed: Vec<LogEntry> =
-        harness.nodes[&leader_id].log().entries().to_vec();
+    let mut observed: Vec<LogEntry> = harness.nodes[&leader_id].log().entries().to_vec();
     for seq in 1_u64..=8 {
         harness.step_node(
             leader_id,
             Event::Propose {
                 client_id: ClientId(1),
                 seq,
-                payload: vec![seq as u8],
+                payload: vec![u8::try_from(seq).expect("test sequence numbers fit in u8")],
             },
         );
         let current = harness.nodes[&leader_id].log().entries().to_vec();
         assert!(
-            current.len() >= observed.len()
-                && current[..observed.len()] == observed[..],
+            current.len() >= observed.len() && current[..observed.len()] == observed[..],
             "leader log prefix changed: was {observed:?}, now {current:?}"
         );
         observed = current;
@@ -79,8 +80,8 @@ fn matching_index_term_implies_matching_prefix() {
                 let idx = LogIndex(i);
                 if la.term_at(idx) == lb.term_at(idx) {
                     assert_eq!(
-                        la.entries()[..i as usize],
-                        lb.entries()[..i as usize],
+                        la.entries()[..usize::try_from(i).expect("log index fits in usize")],
+                        lb.entries()[..usize::try_from(i).expect("log index fits in usize")],
                         "nodes {a} and {b} share (index {i}, term {:?}) but prefixes differ",
                         la.term_at(idx)
                     );
@@ -123,6 +124,18 @@ fn conflict_hint_lands_on_term_boundary() {
             read_round: 0,
         },
     });
+    // The follower adopted term 3, so the rejection is released only
+    // after its hard-state persist is acknowledged (T-02).
+    let mut actions = actions;
+    if actions
+        .iter()
+        .any(|a| matches!(a, Action::PersistHardState { .. }))
+    {
+        actions.extend(follower.step(Event::Persisted {
+            kind: simraft_core::PersistKind::HardState,
+            up_to_index: LogIndex(0),
+        }));
+    }
     let (conflict_index, conflict_term) = actions
         .iter()
         .find_map(|a| match a {

@@ -18,11 +18,11 @@ pub struct Config {
     pub min_election_timeout: u64,
     /// The longest election timeout a follower or candidate will use.
     pub max_election_timeout: u64,
-    /// The most entries one AppendEntries message may carry.
+    /// The most entries one `AppendEntries` message may carry.
     pub max_entries_per_append: usize,
-    /// The approximate byte budget for one AppendEntries message.
+    /// The approximate byte budget for one `AppendEntries` message.
     pub max_append_bytes: usize,
-    /// The chunk size for InstallSnapshot transfers (used from M3).
+    /// The chunk size for `InstallSnapshot` transfers (used from M3).
     pub snapshot_chunk_bytes: usize,
     /// The most client sessions the KV state machine retains (used from M2).
     pub max_sessions: usize,

@@ -2,7 +2,7 @@
 //!
 //! A driver (the simulator, or a future I/O adapter) feeds `Node` one
 //! `Event` at a time and executes the `Action` values that come back.
-//! Event kinds are added per milestone: ReadIndex and configuration
+//! Event kinds are added per milestone: `ReadIndex` and configuration
 //! proposals land at M2 and M3.
 
 use crate::ids::{ClientId, LogIndex, NodeId, Term, Tick};

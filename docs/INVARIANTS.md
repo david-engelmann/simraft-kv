@@ -161,6 +161,16 @@ is the checklist they are audited against at every milestone gate.
     rejected as a config error (a config must keep at least one voter).
     M-01, R-01, T-01 family (validation).
 
+Status at the M1 gate: the M1 rows are enforced by the named suites in
+simraft-core/tests (20 tests, all passing): property_config (T-01,
+T-06), property_prevote (T-03, T-04, T-05 recency), property_persist
+(T-02), property_election (S-01 seeded runs, S-09, S-10),
+property_log (S-02, S-03, S-08), property_progress (S-07), and
+error_context (the config half of E-01). The M1 scope also implements
+the Figure 8 counting rule ahead of its M2 suite (S-06 enforcement
+lands at M2 as scheduled). Rows for later milestones are unenforced
+until their milestone lands.
+
 ## 10. How to read this matrix at a milestone gate
 
 For each milestone, the rows whose Milestone column names it (or an earlier

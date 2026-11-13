@@ -9,7 +9,7 @@
 //!
 //! Implemented at M1: leader election with Pre-Vote, log replication
 //! with conflict-term fast backup, monotonic match tracking, and
-//! persist-before-response ordering. Commitment rules and ReadIndex
+//! persist-before-response ordering. Commitment rules and `ReadIndex`
 //! follow at M2; snapshots and membership changes at M3.
 //!
 //! This crate is strictly std-only (DECISIONS Q5) and forbids unsafe

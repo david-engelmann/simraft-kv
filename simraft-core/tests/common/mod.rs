@@ -29,7 +29,7 @@ pub fn build_nodes(ids: &[u64], seed: u64) -> BTreeMap<NodeId, Node> {
                     NodeId(i),
                     Config::default(),
                     cluster.clone(),
-                    seed ^ (i as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                    seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15),
                 )
                 .expect("default config validates"),
             )
@@ -74,20 +74,9 @@ impl Harness {
         }
     }
 
-    fn route(
-        &mut self,
-        source: NodeId,
-        action: Action,
-        queue: &mut VecDeque<(NodeId, Event)>,
-    ) {
+    fn route(&mut self, source: NodeId, action: Action, queue: &mut VecDeque<(NodeId, Event)>) {
         match action {
-            Action::Send { to, msg } => queue.push_back((
-                to,
-                Event::Message {
-                    from: source,
-                    msg,
-                },
-            )),
+            Action::Send { to, msg } => queue.push_back((to, Event::Message { from: source, msg })),
             Action::PersistHardState { .. } => queue.push_back((
                 source,
                 Event::Persisted {
@@ -157,7 +146,7 @@ impl Harness {
 /// deadline, answer its pre-votes and votes with grants from `peers`
 /// (the caller picks enough for a quorum), and acknowledge its persists.
 /// Returns the final actions produced when it becomes leader (expected
-/// to include the persist for its election NoOp entry).
+/// to include the persist for its election `NoOp` entry).
 pub fn elect(node: &mut Node, peers: &[NodeId]) -> Vec<Action> {
     let tick_actions = node.step(Event::Tick { now: 1_000_000 });
     assert!(

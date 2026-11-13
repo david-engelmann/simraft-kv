@@ -2,7 +2,10 @@
 //! or replication response is emitted before the durable write it
 //! depends on has been acknowledged.
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use simraft_core::{
@@ -19,7 +22,11 @@ fn sends(actions: &[Action]) -> Vec<&Action> {
 
 #[test]
 fn no_response_before_persist_ack() {
-    // Vote path.
+    vote_response_waits_for_persist();
+    append_response_waits_for_persist();
+}
+
+fn vote_response_waits_for_persist() {
     let mut voter = Node::new(
         NodeId(2),
         simraft_core::Config::default(),
@@ -62,8 +69,9 @@ fn no_response_before_persist_ack() {
         )),
         "the persist ack must release the vote response, got {released:?}"
     );
+}
 
-    // Append path on a fresh follower.
+fn append_response_waits_for_persist() {
     let mut follower = Node::new(
         NodeId(3),
         simraft_core::Config::default(),
