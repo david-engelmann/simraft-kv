@@ -116,7 +116,9 @@ jobs:
             exit 0
           fi
           cargo test --workspace
-          if [ -f simraft-sim/Cargo.toml ] || grep -q "simraft-sim" Cargo.toml; then
+          # The sim binary arms the sweep at M4; before that simraft-sim
+          # is a library placeholder with no binary to run.
+          if [ -f simraft-sim/src/main.rs ]; then
             cargo build -p simraft-sim --release
             # One process per seed batch; each run prints its seed (D-03) and
             # a final state digest (D-01). A nonzero exit fails the job.
