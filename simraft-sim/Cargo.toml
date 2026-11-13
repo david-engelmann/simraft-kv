@@ -1,0 +1,17 @@
+[package]
+name = "simraft-sim"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Deterministic simulation harness for simraft-kv: virtual time, fault injection, per-tick safety oracles, and linearizability checking"
+keywords = ["raft", "simulation", "deterministic", "fault-injection", "testing"]
+categories = ["algorithms", "development-tools::testing"]
+
+[dependencies]
+simraft-core = { path = "../simraft-core" }
+simraft-kv = { path = "../simraft-kv" }
+
+[lints]
+workspace = true
