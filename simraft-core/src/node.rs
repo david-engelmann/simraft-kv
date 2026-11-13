@@ -64,6 +64,22 @@ pub(crate) struct PendingAction {
     pub action: Action,
 }
 
+/// One in-flight `ReadIndex` round on a leader: the requests batched
+/// into it, the followers that have echoed its round token, and the
+/// first current-term index that must be committed before any request
+/// in the batch may be released (docs/ARCHITECTURE.md section 8).
+#[derive(Debug, Clone)]
+pub(crate) struct ReadBatch {
+    /// The round token carried on heartbeats for this batch.
+    pub round: u64,
+    /// The first log index of the leader's current term.
+    pub gate_index: LogIndex,
+    /// Voters that have echoed `round`, including the leader itself.
+    pub acks: BTreeSet<NodeId>,
+    /// The pending reads, as (request id, key) pairs.
+    pub requests: Vec<(u64, Vec<u8>)>,
+}
+
 /// One Raft node.
 #[derive(Debug)]
 pub struct Node {
@@ -88,6 +104,11 @@ pub struct Node {
     pub(crate) votes_received: BTreeSet<NodeId>,
     pub(crate) progress: BTreeMap<NodeId, Progress>,
     pub(crate) pending: Vec<PendingAction>,
+    pub(crate) read_round_counter: u64,
+    pub(crate) pending_reads: Option<ReadBatch>,
+    pub(crate) last_read_round: u64,
+    pub(crate) inflight: BTreeMap<(ClientId, u64), LogIndex>,
+    pub(crate) attached: BTreeMap<LogIndex, u64>,
     pub(crate) hard_gen_sent: u64,
     pub(crate) hard_gen_acked: u64,
     pub(crate) entries_durable_up_to: LogIndex,
@@ -133,6 +154,11 @@ impl Node {
             votes_received: BTreeSet::new(),
             progress: BTreeMap::new(),
             pending: Vec::new(),
+            read_round_counter: 0,
+            pending_reads: None,
+            last_read_round: 0,
+            inflight: BTreeMap::new(),
+            attached: BTreeMap::new(),
             hard_gen_sent: 0,
             hard_gen_acked: 0,
             entries_durable_up_to: LogIndex::ZERO,
@@ -228,6 +254,9 @@ impl Node {
                 seq,
                 payload,
             } => self.on_propose(client_id, seq, payload, &mut out),
+            Event::ReadIndex { request_id, key } => {
+                self.on_read_index(request_id, key, &mut out);
+            }
             Event::Message { from, msg } => self.on_message(from, msg, &mut out),
             Event::Persisted { kind, up_to_index } => {
                 self.on_persisted(kind, up_to_index, &mut out);
@@ -354,6 +383,10 @@ impl Node {
         self.last_leader_contact = None;
         self.progress.clear();
         self.pending.clear();
+        self.pending_reads = None;
+        self.last_read_round = 0;
+        self.inflight.clear();
+        self.attached.clear();
         self.votes_received.clear();
         self.prevotes_received.clear();
         self.entries_durable_up_to = self.log.last_index();
@@ -369,6 +402,7 @@ impl Node {
     fn set_term(&mut self, term: Term, out: &mut Vec<Action>) {
         if self.role == Role::Leader {
             out.push(Action::StepDown { term });
+            self.fail_pending_reads(out);
         }
         self.role = Role::Follower;
         self.current_term = term;
@@ -377,6 +411,44 @@ impl Node {
         self.progress.clear();
         self.votes_received.clear();
         self.prevotes_received.clear();
+        self.inflight.clear();
+        self.attached.clear();
+        self.last_read_round = 0;
+    }
+
+    /// Reject every read in the pending `ReadIndex` batch: this node is
+    /// no longer the leader, so none of them can be confirmed.
+    fn fail_pending_reads(&mut self, out: &mut Vec<Action>) {
+        if let Some(batch) = self.pending_reads.take() {
+            for (request_id, _key) in batch.requests {
+                out.push(Action::ReadRejected {
+                    request_id,
+                    leader: None,
+                });
+            }
+        }
+    }
+
+    /// Release the pending `ReadIndex` batch when a quorum has echoed
+    /// its round token and the commit gate (the first current-term
+    /// index) is committed. The read index is the commit index at
+    /// release, which never moves backwards across batches (R-03).
+    fn try_release_reads(&mut self, out: &mut Vec<Action>) {
+        let Some(batch) = &self.pending_reads else {
+            return;
+        };
+        if batch.acks.len() < self.cluster.quorum() || self.commit_index < batch.gate_index {
+            return;
+        }
+        let read_index = self.commit_index;
+        let batch = self.pending_reads.take().expect("batch checked above");
+        for (request_id, key) in batch.requests {
+            out.push(Action::ReadReady {
+                request_id,
+                key,
+                read_index,
+            });
+        }
     }
 
     /// Whether the candidate log tip `(last_term, last_index)` is at
@@ -503,6 +575,47 @@ impl Node {
         }
     }
 
+    /// Handle a `ReadIndex` request (docs/ARCHITECTURE.md section 8):
+    /// batch the read into the pending round, or open a new round with
+    /// a fresh round token and a heartbeat broadcast. Only the leader
+    /// serves reads.
+    fn on_read_index(&mut self, request_id: u64, key: Vec<u8>, out: &mut Vec<Action>) {
+        if self.role != Role::Leader {
+            out.push(Action::ReadRejected {
+                request_id,
+                leader: self.leader_id,
+            });
+            return;
+        }
+        if let Some(batch) = &mut self.pending_reads {
+            batch.requests.push((request_id, key));
+            return;
+        }
+        let Some(gate_index) = self.log.first_index_of_term(self.current_term) else {
+            // A leader always holds an entry of its own term (its
+            // election NoOp); reject defensively if that ever breaks.
+            out.push(Action::ReadRejected {
+                request_id,
+                leader: self.leader_id,
+            });
+            return;
+        };
+        self.read_round_counter += 1;
+        let mut acks = BTreeSet::new();
+        acks.insert(self.id);
+        self.pending_reads = Some(ReadBatch {
+            round: self.read_round_counter,
+            gate_index,
+            acks,
+            requests: vec![(request_id, key)],
+        });
+        let peers: Vec<NodeId> = self.progress.keys().copied().collect();
+        for peer in peers {
+            self.send_append(peer, out);
+        }
+        self.try_release_reads(out);
+    }
+
     fn on_propose(
         &mut self,
         client_id: ClientId,
@@ -520,6 +633,15 @@ impl Node {
             });
             return;
         }
+        // In-flight deduplication (C-02): a retry of a proposal that
+        // is still uncommitted attaches to the in-flight entry. It
+        // appends nothing and is answered when the entry applies.
+        if let Some(&index) = self.inflight.get(&(client_id, seq)) {
+            if index > self.commit_index {
+                *self.attached.entry(index).or_insert(0) += 1;
+                return;
+            }
+        }
         let entry = LogEntry {
             term: self.current_term,
             kind: EntryKind::Command {
@@ -530,6 +652,7 @@ impl Node {
         };
         let entries = vec![entry];
         let first = self.log.append(&entries);
+        self.inflight.insert((client_id, seq), first);
         out.push(Action::PersistEntries {
             from_index: first,
             entries,
@@ -544,7 +667,7 @@ impl Node {
 
     /// Build the `AppendEntries` message this leader would send `peer`
     /// now, from its current progress.
-    fn build_append(&self, peer: NodeId) -> Message {
+    fn build_append(&self, peer: NodeId, read_round: u64) -> Message {
         let next = self
             .progress
             .get(&peer)
@@ -562,14 +685,15 @@ impl Node {
             prev_log_term: prev_term,
             entries,
             leader_commit: self.commit_index,
-            read_round: 0,
+            read_round,
         }
     }
 
     /// Emit an `AppendEntries` to `peer`, holding it back if it carries
     /// entries that are not yet durable locally (T-02).
     fn send_append(&mut self, peer: NodeId, out: &mut Vec<Action>) {
-        let msg = self.build_append(peer);
+        let round = self.pending_reads.as_ref().map_or(0, |batch| batch.round);
+        let msg = self.build_append(peer, round);
         let mut need = LogIndex::ZERO;
         if let Message::AppendEntries {
             prev_log_index,
@@ -606,6 +730,7 @@ impl Node {
         if candidate > self.commit_index && self.log.term_at(candidate) == Some(self.current_term) {
             self.commit_index = candidate;
             self.emit_applies(out);
+            self.try_release_reads(out);
             let peers: Vec<NodeId> = self.progress.keys().copied().collect();
             for peer in peers {
                 self.send_append(peer, out);
@@ -643,6 +768,25 @@ impl Node {
                     0,
                     index,
                 );
+                // In-flight dedup bookkeeping (C-02): the entry has
+                // applied, so the (client, seq) leaves the in-flight
+                // table, and every attached retry gets the same
+                // response as the original.
+                self.inflight.remove(&(client_id, seq));
+                if let Some(extra) = self.attached.remove(&index) {
+                    for _ in 0..extra {
+                        self.defer_or_emit(
+                            out,
+                            Action::ClientResponse {
+                                client_id,
+                                seq,
+                                result: ClientResult::Committed,
+                            },
+                            0,
+                            index,
+                        );
+                    }
+                }
             }
         }
     }
@@ -673,7 +817,7 @@ impl Node {
                 prev_log_term,
                 entries,
                 leader_commit,
-                ..
+                read_round,
             } => self.on_append_entries(
                 from,
                 term,
@@ -681,6 +825,7 @@ impl Node {
                 prev_log_term,
                 &entries,
                 leader_commit,
+                read_round,
                 out,
             ),
             Message::AppendEntriesResponse {
@@ -689,7 +834,7 @@ impl Node {
                 match_index,
                 conflict_index,
                 conflict_term,
-                ..
+                read_round,
             } => self.on_append_response(
                 from,
                 term,
@@ -697,6 +842,7 @@ impl Node {
                 match_index,
                 conflict_index,
                 conflict_term,
+                read_round,
                 out,
             ),
         }
@@ -829,6 +975,7 @@ impl Node {
         prev_log_term: Term,
         entries: &[LogEntry],
         leader_commit: LogIndex,
+        read_round: u64,
         out: &mut Vec<Action>,
     ) {
         if term < self.current_term {
@@ -850,8 +997,11 @@ impl Node {
             true
         } else if self.role == Role::Leader {
             out.push(Action::StepDown { term });
+            self.fail_pending_reads(out);
             self.role = Role::Follower;
             self.progress.clear();
+            self.inflight.clear();
+            self.attached.clear();
             false
         } else {
             self.role = Role::Follower;
@@ -902,6 +1052,12 @@ impl Node {
             LogIndex(prev_log_index.0 + entries.len() as u64)
         };
 
+        // ReadIndex bookkeeping (R-04): remember the highest round
+        // token this leader has shown us and echo it back, so the
+        // leader can count this node toward that round's quorum.
+        if read_round > self.last_read_round {
+            self.last_read_round = read_round;
+        }
         let matched = if entries.is_empty() {
             prev_log_index
         } else {
@@ -915,7 +1071,7 @@ impl Node {
                 match_index: matched,
                 conflict_index: LogIndex::ZERO,
                 conflict_term: Term::ZERO,
-                read_round: 0,
+                read_round: self.last_read_round,
             },
         };
         if hard_changed {
@@ -992,6 +1148,7 @@ impl Node {
         match_index: LogIndex,
         conflict_index: LogIndex,
         conflict_term: Term,
+        read_round: u64,
         out: &mut Vec<Action>,
     ) {
         if term > self.current_term {
@@ -1020,6 +1177,17 @@ impl Node {
             if advance {
                 self.advance_commit(out);
             }
+            // A successful response echoes the follower's latest round
+            // token; count it toward the pending ReadIndex round and
+            // release the batch if the commit gate also holds.
+            if read_round != 0 {
+                if let Some(batch) = &mut self.pending_reads {
+                    if batch.round == read_round {
+                        batch.acks.insert(from);
+                    }
+                }
+            }
+            self.try_release_reads(out);
             return;
         }
         // Fast log backup from the conflict hint (S-08), never moving
