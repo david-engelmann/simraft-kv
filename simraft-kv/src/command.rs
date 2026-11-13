@@ -9,8 +9,8 @@
 //! ```
 //!
 //! Command results use the section 7.2 result encoding: tag 0 = Ack
-//! (no payload), 1 = Value (value_len u32 plus bytes), 2 = Error
-//! (error_code u32, message_len u32, message UTF-8 bytes). All integers
+//! (no payload), 1 = Value (`value_len` u32 plus bytes), 2 = Error
+//! (`error_code` u32, `message_len` u32, message UTF-8 bytes). All integers
 //! are little-endian.
 
 use crate::error::KvError;
@@ -80,7 +80,10 @@ pub fn encode_command(client_id: ClientId, seq: u64, op: &KvOp) -> Vec<u8> {
 /// payload ends early, and `KvError::UnknownTag` for an unassigned
 /// operation kind.
 pub fn decode_command(payload: &[u8]) -> Result<(ClientId, u64, KvOp), KvError> {
-    let mut reader = Reader { buf: payload, pos: 0 };
+    let mut reader = Reader {
+        buf: payload,
+        pos: 0,
+    };
     let client_id = ClientId(reader.u64("client_id")?);
     let seq = reader.u64("seq")?;
     let kind_offset = reader.pos;
@@ -131,7 +134,10 @@ pub fn encode_result(result: &CommandResult) -> Vec<u8> {
 /// Returns `KvError::Truncated` or `KvError::UnknownTag` for malformed
 /// input, naming the offset.
 pub fn decode_result(payload: &[u8]) -> Result<CommandResult, KvError> {
-    let mut reader = Reader { buf: payload, pos: 0 };
+    let mut reader = Reader {
+        buf: payload,
+        pos: 0,
+    };
     let tag_offset = reader.pos;
     let tag = reader.u8("result tag")?;
     match tag {

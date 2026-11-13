@@ -39,7 +39,7 @@ pub enum Event {
     },
     /// A client asks the leader for a linearizable read of `key`.
     ///
-    /// The core runs the ReadIndex protocol (docs/ARCHITECTURE.md
+    /// The core runs the `ReadIndex` protocol (docs/ARCHITECTURE.md
     /// section 8) and answers with `Action::ReadReady` once the read is
     /// safe to serve, or `Action::ReadRejected` when this node cannot
     /// serve it. The key is carried opaquely; the value lives in the

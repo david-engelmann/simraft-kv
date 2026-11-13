@@ -161,6 +161,15 @@ is the checklist they are audited against at every milestone gate.
     rejected as a config error (a config must keep at least one voter).
     M-01, R-01, T-01 family (validation).
 
+Status at the M2 gate: property_commit enforces S-05 and S-06;
+property_readindex enforces R-01, R-02, R-03, and R-04 with the
+leader-only rule of section 8; core property_dedup enforces C-02;
+kv property_dedup enforces C-01, C-03, and C-04 and the read gating
+half of R-05 (the end-to-end read path completes when the simulator
+drives reads at M4); command_codec enforces the canonical-encoding
+half of D-03 for command payloads. 40 tests pass across the
+workspace.
+
 Status at the M1 gate: the M1 rows are enforced by the named suites in
 simraft-core/tests (20 tests, all passing): property_config (T-01,
 T-06), property_prevote (T-03, T-04, T-05 recency), property_persist

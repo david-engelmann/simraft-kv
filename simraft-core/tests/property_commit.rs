@@ -1,7 +1,10 @@
 //! Commitment properties (invariants S-05 and S-06): the Figure 8
 //! rule and same-index same-entry apply consistency.
 
-#[allow(dead_code, reason = "each test file uses a different subset of the shared driver helpers")]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use simraft_core::{
@@ -25,12 +28,7 @@ impl Filtered {
         }
     }
 
-    fn step(
-        &mut self,
-        id: NodeId,
-        event: Event,
-        partition: Option<(&[u64], &[u64])>,
-    ) {
+    fn step(&mut self, id: NodeId, event: Event, partition: Option<(&[u64], &[u64])>) {
         // A send is delivered only when sender and recipient sit in
         // the same partition cell. None connects everyone.
         let cells: Option<(BTreeSet<NodeId>, BTreeSet<NodeId>)> = partition.map(|(a, b)| {
@@ -61,7 +59,10 @@ impl Filtered {
                             up_to_index: LogIndex::ZERO,
                         },
                     )),
-                    Action::PersistEntries { from_index, entries } => {
+                    Action::PersistEntries {
+                        from_index,
+                        entries,
+                    } => {
                         let up_to = if entries.is_empty() {
                             LogIndex(from_index.0.saturating_sub(1))
                         } else {
@@ -76,10 +77,15 @@ impl Filtered {
                         ));
                     }
                     Action::Apply { index, entry } => {
-                        self.applies.get_mut(&node_id).expect("cluster node").push((index, entry));
+                        self.applies
+                            .get_mut(&node_id)
+                            .expect("cluster node")
+                            .push((index, entry));
                     }
-                    Action::ClientResponse { .. } | Action::StepDown { .. } => {}
-                    Action::ReadReady { .. } | Action::ReadRejected { .. } => {}
+                    Action::ClientResponse { .. }
+                    | Action::StepDown { .. }
+                    | Action::ReadReady { .. }
+                    | Action::ReadRejected { .. } => {}
                 }
             }
         }
@@ -187,7 +193,7 @@ fn figure8_overwritten_entry_never_applies() {
             .nodes
             .values()
             .filter(|n| n.role() == simraft_core::Role::Leader)
-            .map(|n| n.id())
+            .map(simraft_core::Node::id)
             .collect();
         if leaders.len() == 1 {
             leader_a = Some(leaders[0]);
@@ -196,7 +202,11 @@ fn figure8_overwritten_entry_never_applies() {
         now += 25;
     }
     let leader_a = leader_a.expect("a term-1 leader emerges");
-    let others: Vec<u64> = all.iter().copied().filter(|&i| NodeId(i) != leader_a).collect();
+    let others: Vec<u64> = all
+        .iter()
+        .copied()
+        .filter(|&i| NodeId(i) != leader_a)
+        .collect();
     let f1 = others[0];
     // Phase 2: the leader proposes X at index 2; only one follower
     // receives it. Two of five replicas: X stays uncommitted.

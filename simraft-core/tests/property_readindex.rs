@@ -1,13 +1,14 @@
-//! ReadIndex properties (invariants R-01 to R-05): the current-term
+//! `ReadIndex` properties (invariants R-01 to R-05): the current-term
 //! commit gate, quorum heartbeat confirmation, monotonic round tokens,
 //! and leader-only reads.
 
-#[allow(dead_code, reason = "each test file uses a different subset of the shared driver helpers")]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
-use simraft_core::{
-    Action, Event, LogIndex, Message, Node, NodeId, PersistKind, Term,
-};
+use simraft_core::{Action, Event, LogIndex, Message, Node, NodeId, PersistKind, Term};
 
 fn read_rounds_in(actions: &[Action]) -> Vec<u64> {
     actions
@@ -46,7 +47,7 @@ fn uncommitted_leader() -> Node {
     leader
 }
 
-fn ae_response(from: u64, match_index: u64, read_round: u64) -> Event {
+const fn ae_response(from: u64, match_index: u64, read_round: u64) -> Event {
     Event::Message {
         from: NodeId(from),
         msg: Message::AppendEntriesResponse {
@@ -167,7 +168,10 @@ fn read_index_never_goes_backwards() {
             }
         }
         let index = released.expect("each read releases once its round is confirmed");
-        assert!(index >= last, "read_index moved backwards: {index} < {last}");
+        assert!(
+            index >= last,
+            "read_index moved backwards: {index} < {last}"
+        );
         last = index;
     }
 }

@@ -2,7 +2,7 @@
 //!
 //! Applies committed log entries in index order, executes each client
 //! command exactly once per (client, sequence) pair, and serves
-//! ReadIndex reads pinned to an applied index. Deduplication semantics
+//! `ReadIndex` reads pinned to an applied index. Deduplication semantics
 //! (docs/ARCHITECTURE.md section 10): the session table remembers each
 //! client's last sequence and its cached response; a retry of the last
 //! sequence returns the cached response without re-executing; a
@@ -11,7 +11,7 @@
 //! applied committed session, after which a retry of that client's
 //! sequence may re-execute (the documented eviction contract).
 
-use crate::command::{decode_command, CommandResult, KvOp};
+use crate::command::{CommandResult, KvOp, decode_command};
 use crate::error::KvError;
 use simraft_core::{ClientId, EntryKind, LogEntry, LogIndex};
 use std::collections::BTreeMap;
@@ -24,7 +24,7 @@ pub const ERR_DECODE: u32 = 2;
 /// What applying one entry did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ApplyOutcome {
-    /// The entry was not a command (NoOp or configuration).
+    /// The entry was not a command (`NoOp` or configuration).
     NotCommand,
     /// The command executed; `result` is its outcome.
     Applied {
@@ -70,7 +70,7 @@ impl KvStateMachine {
     /// A fresh state machine retaining at most `max_sessions` client
     /// sessions.
     #[must_use]
-    pub fn new(max_sessions: usize) -> Self {
+    pub const fn new(max_sessions: usize) -> Self {
         Self {
             store: BTreeMap::new(),
             sessions: BTreeMap::new(),
@@ -98,7 +98,7 @@ impl KvStateMachine {
         self.store.get(key).map(Vec::as_slice)
     }
 
-    /// Serve a ReadIndex read: `None` until this machine has applied
+    /// Serve a `ReadIndex` read: `None` until this machine has applied
     /// through `read_index`; then the value of `key` at that point
     /// (`Some(None)` when the key is absent). Because applies are
     /// sequential and this machine holds no newer unapplied state, a
@@ -141,13 +141,34 @@ impl KvStateMachine {
         Ok(outcome)
     }
 
-    /// Execute one command payload. Stage A executes unconditionally;
-    /// Stage B adds the session ordering, caching, and eviction rules.
-    fn apply_command(&mut self, _index: LogIndex, payload: &[u8]) -> ApplyOutcome {
-        let (_client, _seq, op) = match decode_command(payload) {
+    /// Execute one command payload under the session rules of
+    /// docs/ARCHITECTURE.md section 10.
+    fn apply_command(&mut self, index: LogIndex, payload: &[u8]) -> ApplyOutcome {
+        let (client, seq, op) = match decode_command(payload) {
             Ok(decoded) => decoded,
             Err(error) => return ApplyOutcome::Failed { error },
         };
+        if let Some(session) = self.sessions.get(&client) {
+            match seq.cmp(&session.last_seq) {
+                std::cmp::Ordering::Equal => {
+                    return ApplyOutcome::Cached {
+                        result: session.response.clone(),
+                    };
+                }
+                std::cmp::Ordering::Less => return ApplyOutcome::DuplicateStale,
+                std::cmp::Ordering::Greater => {
+                    if seq != session.last_seq + 1 {
+                        return ApplyOutcome::Applied {
+                            result: Self::gap_error(client, session.last_seq + 1, seq),
+                        };
+                    }
+                }
+            }
+        } else if seq != 1 {
+            return ApplyOutcome::Applied {
+                result: Self::gap_error(client, 1, seq),
+            };
+        }
         let result = match &op {
             KvOp::Put { key, value } => {
                 self.store.insert(key.clone(), value.clone());
@@ -158,6 +179,49 @@ impl KvStateMachine {
                 CommandResult::Ack
             }
         };
+        self.sessions.insert(
+            client,
+            SessionEntry {
+                last_seq: seq,
+                response: result.clone(),
+                applied_index: index,
+            },
+        );
+        self.evict_sessions();
         ApplyOutcome::Applied { result }
+    }
+
+    /// The error result for a sequence gap: the command did not
+    /// execute and the session did not advance (C-04).
+    fn gap_error(client: ClientId, expected: u64, received: u64) -> CommandResult {
+        CommandResult::Error {
+            code: ERR_SESSION_GAP,
+            message: KvError::SessionGap {
+                client_id: client,
+                expected,
+                received,
+            }
+            .to_string(),
+        }
+    }
+
+    /// Evict least-recently-applied sessions until the table is within
+    /// its bound (C-03). The just-applied session carries the highest
+    /// applied index, so it is never the victim unless it is the only
+    /// session and the bound is zero.
+    fn evict_sessions(&mut self) {
+        while self.sessions.len() > self.max_sessions {
+            let victim = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, session)| session.applied_index)
+                .map(|(client, _)| *client);
+            match victim {
+                Some(client) => {
+                    self.sessions.remove(&client);
+                }
+                None => break,
+            }
+        }
     }
 }

@@ -45,7 +45,7 @@ pub struct Harness {
     pub applies: BTreeMap<NodeId, Vec<(LogIndex, LogEntry)>>,
     /// Client responses observed, as (answering node, action) pairs.
     pub client_responses: Vec<(NodeId, Action)>,
-    /// ReadIndex outcomes observed, as (answering node, action) pairs.
+    /// `ReadIndex` outcomes observed, as (answering node, action) pairs.
     pub read_events: Vec<(NodeId, Action)>,
 }
 

@@ -2,7 +2,10 @@
 //! uncommitted proposal attaches to the in-flight entry, appends no
 //! second entry, and receives the same response on commit.
 
-#[allow(dead_code, reason = "each test file uses a different subset of the shared driver helpers")]
+#[allow(
+    dead_code,
+    reason = "each test file uses a different subset of the shared driver helpers"
+)]
 mod common;
 
 use simraft_core::{
@@ -38,14 +41,23 @@ fn duplicate_propose_attaches_to_inflight_entry() {
     let mut leader = committed_leader();
     let first = propose(&mut leader, 1);
     assert!(
-        first.iter().any(|a| matches!(a, Action::PersistEntries { .. })),
+        first
+            .iter()
+            .any(|a| matches!(a, Action::PersistEntries { .. })),
         "the original proposal persists its entry"
     );
     assert_eq!(leader.log().last_index(), LogIndex(2));
+    // The entry is durable locally before replication completes.
+    let _ = leader.step(Event::Persisted {
+        kind: PersistKind::Entries,
+        up_to_index: LogIndex(2),
+    });
 
     let retry = propose(&mut leader, 1);
     assert!(
-        !retry.iter().any(|a| matches!(a, Action::PersistEntries { .. })),
+        !retry
+            .iter()
+            .any(|a| matches!(a, Action::PersistEntries { .. })),
         "a retry of an in-flight proposal must not persist a second entry, got {retry:?}"
     );
     assert_eq!(
@@ -69,14 +81,16 @@ fn duplicate_propose_attaches_to_inflight_entry() {
         });
         responses += actions
             .iter()
-            .filter(|a| matches!(
-                a,
-                Action::ClientResponse {
-                    client_id: ClientId(7),
-                    seq: 1,
-                    result: ClientResult::Committed,
-                }
-            ))
+            .filter(|a| {
+                matches!(
+                    a,
+                    Action::ClientResponse {
+                        client_id: ClientId(7),
+                        seq: 1,
+                        result: ClientResult::Committed,
+                    }
+                )
+            })
             .count();
     }
     assert_eq!(
@@ -91,7 +105,9 @@ fn different_seq_appends_normally() {
     let _ = propose(&mut leader, 1);
     let second = propose(&mut leader, 2);
     assert!(
-        second.iter().any(|a| matches!(a, Action::PersistEntries { .. })),
+        second
+            .iter()
+            .any(|a| matches!(a, Action::PersistEntries { .. })),
         "a new sequence number is a new entry"
     );
     assert_eq!(leader.log().last_index(), LogIndex(3));
