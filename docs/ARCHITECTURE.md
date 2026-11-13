@@ -62,7 +62,10 @@ simulator tests is the code an adapter would run.
 
 ## 3. Crate and module boundaries
 
-The workspace has exactly three crates in Milestones 1 to 4.
+The workspace has exactly three crates in Milestones 1 to 4. Workspace
+layout: the crates live at the repository root as simraft-core/,
+simraft-kv/, and simraft-sim/, next to a root Cargo.toml workspace
+manifest (which lands at M1 Stage A); there is no crates/ directory.
 
 | Crate | Kind | External dependencies | Responsibility |
 | --- | --- | --- | --- |
@@ -381,6 +384,23 @@ Config body:   voter_count u32, voter NodeIds u64 each in ascending order,
 Ascending order is part of the encoding contract: two encodings of the same
 config compare byte equal, which the state digest and the trace rely on.
 
+Command result encoding (the cached response stored per session, used in
+the snapshot format in section 7.4 and wherever a command outcome is
+encoded):
+
+```text
+tag: u8   0 = Ack, 1 = Value, 2 = Error
+Ack:      no payload. The Put or Delete applied successfully.
+Value:    value_len u32, value bytes. A read-back value carried as a
+          command outcome (reserved for read-modify commands; plain Put
+          and Delete always produce Ack).
+Error:    error_code u32, message_len u32, message bytes (UTF-8). The
+          command was rejected without applying; error_code values are
+          assigned in simraft-kv::command and never reused.
+```
+
+Any other tag value is a decode error naming the tag and its byte offset.
+
 ### 7.3 Durable storage records (simulator disk and future file adapter)
 
 Hard state record: magic "SRHS" (4 bytes), version u16 = 1, record_len u32,
@@ -407,8 +427,10 @@ last_included_term, config }. The snapshot byte payload layout is:
 22    ..    config (section 7.2 Config body)
 ..    8     store_count u64, then per entry: key_len u32, key, value_len u32, value
 ..    8     session_count u64, then per session: client_id u64, last_seq u64,
-            response tag u8, response payload (section 7.2 Command result
-            encoding: ok u8, value_len u32 plus bytes for a read-back value)
+            response (section 7.2 Command result encoding: tag u8, where
+            0 = Ack with no payload, 1 = Value with value_len u32 plus
+            value bytes, 2 = Error with error_code u32, message_len u32,
+            plus message bytes)
 end-32 32   SHA-256 digest over all preceding bytes with domain prefix
             "simraft-kv/snapshot/v1" prepended to the hash input
 ```

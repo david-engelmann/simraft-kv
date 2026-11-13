@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: No em dashes in public copy
+      - name: No em dashes or en dashes in public copy
         run: |
           python3 - <<'PY'
           import pathlib, sys
@@ -33,13 +33,13 @@ jobs:
                   continue
               text = p.read_text(encoding='utf-8')
               for i, line in enumerate(text.splitlines(), 1):
-                  if '\u2014' in line:
+                  if '\u2014' in line or '\u2013' in line:
                       bad.append(f"{p}:{i}")
           if bad:
-              print("em dash found in public copy:")
+              print("em dash or en dash found in public copy:")
               print("\n".join(bad))
               sys.exit(1)
-          print("no em dashes in markdown")
+          print("no em dashes or en dashes in markdown")
           PY
       - name: DECISIONS.md present and locked
         run: |
@@ -49,15 +49,29 @@ jobs:
           grep -q "LOCKED by David 2026-11-12" DECISIONS.md
       - name: Forbidden nondeterminism identifiers in deterministic crates
         run: |
-          # Arms at M1 when the crates exist. At M0 (docs only) it is a no-op.
-          # Test inputs and comments are excluded; see docs/INVARIANTS.md D-02.
-          if [ -d crates ] || [ -f Cargo.toml ]; then
-            ! grep -rnE "std::collections::(HashMap|HashSet)|SystemTime|Instant::now|thread_rng|OsRng" \
-              --include='*.rs' simraft-core simraft-kv simraft-sim 2>/dev/null \
-              | grep -vE "^\s*[^:]+:[0-9]+:\s*//" || exit 1
-          else
+          # Crates live at the repo root (docs/ARCHITECTURE.md section 3):
+          # simraft-core/, simraft-kv/, simraft-sim/, root Cargo.toml.
+          # Arms at M1 when the workspace manifest exists. At M0 (docs only)
+          # it is a no-op. Comments are excluded; see docs/INVARIANTS.md D-02.
+          # A grep error (exit status above 1) fails this step outright.
+          if [ ! -f Cargo.toml ]; then
             echo "M0 docs-only tree: determinism source guard arms at M1"
+            exit 0
           fi
+          status=0
+          hits=$(grep -rnE "std::collections::(HashMap|HashSet)|SystemTime|Instant::now|thread_rng|OsRng" \
+            --include='*.rs' simraft-core simraft-kv simraft-sim) || status=$?
+          if [ "$status" -gt 1 ]; then
+            echo "determinism guard grep failed with status $status"
+            exit 1
+          fi
+          hits=$(printf '%s' "$hits" | grep -vE ":[[:space:]]*//" || true)
+          if [ -n "$hits" ]; then
+            echo "forbidden nondeterminism identifiers found:"
+            printf '%s\n' "$hits"
+            exit 1
+          fi
+          echo "no forbidden nondeterminism identifiers"
 
   rust-gates:
     name: Rust gates (fmt, clippy, doc, test, bench smoke)
@@ -67,7 +81,7 @@ jobs:
       - name: Install pinned toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.91.1"
+          toolchain: "1.100.0"
           components: rustfmt, clippy
       - name: Cargo gates
         run: |
@@ -92,7 +106,7 @@ jobs:
       - name: Install pinned toolchain
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.91.1"
+          toolchain: "1.100.0"
           components: rustfmt, clippy
       - name: Run seed sweep
         run: |
