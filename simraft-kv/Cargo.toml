@@ -1,0 +1,16 @@
+[package]
+name = "simraft-kv"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+description = "Key-value state machine for simraft-kv: deterministic apply, client session deduplication, and canonical command and snapshot payload encoding"
+keywords = ["raft", "key-value", "replication", "state-machine"]
+categories = ["algorithms", "database-implementations"]
+
+[dependencies]
+simraft-core = { path = "../simraft-core" }
+
+[lints]
+workspace = true
