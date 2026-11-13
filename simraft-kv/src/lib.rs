@@ -20,6 +20,8 @@ pub mod machine;
 /// implemented by this crate (docs/ARCHITECTURE.md section 7).
 pub const SCHEMA_VERSION: u16 = 1;
 
-pub use command::{decode_command, decode_result, encode_command, encode_result, CommandResult, KvOp};
+pub use command::{
+    CommandResult, KvOp, decode_command, decode_result, encode_command, encode_result,
+};
 pub use error::KvError;
 pub use machine::{ApplyOutcome, KvStateMachine};

@@ -2,7 +2,7 @@
 
 use simraft_core::ClientId;
 use simraft_kv::{
-    decode_command, decode_result, encode_command, encode_result, CommandResult, KvError, KvOp,
+    CommandResult, KvError, KvOp, decode_command, decode_result, encode_command, encode_result,
 };
 
 #[test]
@@ -64,11 +64,7 @@ fn truncated_payload_names_field_and_offset() {
 
 #[test]
 fn unknown_tags_are_named() {
-    let mut encoded = encode_command(
-        ClientId(1),
-        1,
-        &KvOp::Delete { key: b"k".to_vec() },
-    );
+    let mut encoded = encode_command(ClientId(1), 1, &KvOp::Delete { key: b"k".to_vec() });
     encoded[16] = 99;
     match decode_command(&encoded) {
         Err(KvError::UnknownTag { tag: 99, .. }) => {}
