@@ -45,6 +45,8 @@ pub struct Harness {
     pub applies: BTreeMap<NodeId, Vec<(LogIndex, LogEntry)>>,
     /// Client responses observed, as (answering node, action) pairs.
     pub client_responses: Vec<(NodeId, Action)>,
+    /// ReadIndex outcomes observed, as (answering node, action) pairs.
+    pub read_events: Vec<(NodeId, Action)>,
 }
 
 impl Harness {
@@ -54,6 +56,7 @@ impl Harness {
             applies: ids.iter().map(|&i| (NodeId(i), Vec::new())).collect(),
             nodes: build_nodes(ids, seed),
             client_responses: Vec::new(),
+            read_events: Vec::new(),
         }
     }
 
@@ -109,6 +112,9 @@ impl Harness {
             }
             Action::ClientResponse { .. } => {
                 self.client_responses.push((source, action));
+            }
+            Action::ReadReady { .. } | Action::ReadRejected { .. } => {
+                self.read_events.push((source, action));
             }
             Action::StepDown { .. } => {}
         }

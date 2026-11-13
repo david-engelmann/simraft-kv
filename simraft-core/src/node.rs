@@ -64,6 +64,22 @@ pub(crate) struct PendingAction {
     pub action: Action,
 }
 
+/// One in-flight ReadIndex round on a leader: the requests batched
+/// into it, the followers that have echoed its round token, and the
+/// first current-term index that must be committed before any request
+/// in the batch may be released (docs/ARCHITECTURE.md section 8).
+#[derive(Debug, Clone)]
+pub(crate) struct ReadBatch {
+    /// The round token carried on heartbeats for this batch.
+    pub round: u64,
+    /// The first log index of the leader's current term.
+    pub gate_index: LogIndex,
+    /// Voters that have echoed `round`, including the leader itself.
+    pub acks: BTreeSet<NodeId>,
+    /// The pending reads, as (request id, key) pairs.
+    pub requests: Vec<(u64, Vec<u8>)>,
+}
+
 /// One Raft node.
 #[derive(Debug)]
 pub struct Node {
@@ -88,6 +104,11 @@ pub struct Node {
     pub(crate) votes_received: BTreeSet<NodeId>,
     pub(crate) progress: BTreeMap<NodeId, Progress>,
     pub(crate) pending: Vec<PendingAction>,
+    pub(crate) read_round_counter: u64,
+    pub(crate) pending_reads: Option<ReadBatch>,
+    pub(crate) last_read_round: u64,
+    pub(crate) inflight: BTreeMap<(ClientId, u64), LogIndex>,
+    pub(crate) attached: BTreeMap<LogIndex, u64>,
     pub(crate) hard_gen_sent: u64,
     pub(crate) hard_gen_acked: u64,
     pub(crate) entries_durable_up_to: LogIndex,
@@ -133,6 +154,11 @@ impl Node {
             votes_received: BTreeSet::new(),
             progress: BTreeMap::new(),
             pending: Vec::new(),
+            read_round_counter: 0,
+            pending_reads: None,
+            last_read_round: 0,
+            inflight: BTreeMap::new(),
+            attached: BTreeMap::new(),
             hard_gen_sent: 0,
             hard_gen_acked: 0,
             entries_durable_up_to: LogIndex::ZERO,
@@ -228,6 +254,9 @@ impl Node {
                 seq,
                 payload,
             } => self.on_propose(client_id, seq, payload, &mut out),
+            Event::ReadIndex { request_id, key } => {
+                self.on_read_index(request_id, key, &mut out);
+            }
             Event::Message { from, msg } => self.on_message(from, msg, &mut out),
             Event::Persisted { kind, up_to_index } => {
                 self.on_persisted(kind, up_to_index, &mut out);
@@ -354,6 +383,10 @@ impl Node {
         self.last_leader_contact = None;
         self.progress.clear();
         self.pending.clear();
+        self.pending_reads = None;
+        self.last_read_round = 0;
+        self.inflight.clear();
+        self.attached.clear();
         self.votes_received.clear();
         self.prevotes_received.clear();
         self.entries_durable_up_to = self.log.last_index();
@@ -501,6 +534,15 @@ impl Node {
                 }
             }
         }
+    }
+
+    /// Handle a ReadIndex request. Stage A contract: every read is
+    /// rejected; Stage B runs the heartbeat round protocol.
+    fn on_read_index(&mut self, request_id: u64, _key: Vec<u8>, out: &mut Vec<Action>) {
+        out.push(Action::ReadRejected {
+            request_id,
+            leader: self.leader_id,
+        });
     }
 
     fn on_propose(
