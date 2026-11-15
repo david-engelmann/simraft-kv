@@ -104,7 +104,7 @@ fn leader_switches_to_snapshot_at_base_boundary() {
 
     // The next sends to node 3, whose next index (2) is at or below
     // the base, must be InstallSnapshot chunks, not AppendEntries.
-    let actions = leader.step(Event::Tick { now: 10_000 });
+    let actions = leader.step(Event::Tick { now: 2_000_000 });
     let to_three: Vec<&Message> = actions
         .iter()
         .filter_map(|a| match a {

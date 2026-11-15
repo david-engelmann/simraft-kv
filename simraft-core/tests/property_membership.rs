@@ -31,7 +31,7 @@ fn node(id: u64, cluster: &ClusterConfig, seed: u64) -> Node {
     Node::new(NodeId(id), Config::default(), cluster.clone(), seed ^ id).expect("config validates")
 }
 
-fn append_response(from: u64, term: Term, match_index: u64) -> Event {
+const fn append_response(from: u64, term: Term, match_index: u64) -> Event {
     Event::Message {
         from: NodeId(from),
         msg: Message::AppendEntriesResponse {
@@ -333,9 +333,7 @@ fn leader_steps_down_only_after_self_removal_commits() {
         "M-03: the leader steps down once its removal commits"
     );
     assert!(
-        config_responses(&final_actions)
-            .iter()
-            .any(|r| *r == ConfigResult::Committed),
+        config_responses(&final_actions).contains(&ConfigResult::Committed),
         "the removal proposal answers Committed, got {final_actions:?}"
     );
 }
