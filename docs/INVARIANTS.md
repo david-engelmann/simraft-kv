@@ -64,7 +64,7 @@ LAT latency and resource bounds, DET determinism, ERR diagnostics.
 | --- | --- | --- | --- |
 | M-01 | One uncommitted change (SAF): at most one config entry is ever uncommitted. A leader rejects ProposeConfig while last_config_index > commit_index, with both indexes in the error. | Property test `simraft-core/tests/property_membership.rs::second_config_change_rejected_while_first_uncommitted`. | M3 |
 | M-02 | NoOp before config (SAF): a newly elected leader rejects config proposals until its current-term NoOp entry has committed. | Property test `simraft-core/tests/property_membership.rs::config_rejected_before_leader_noop_commits`. | M3 |
-| M-03 | Commit-then-step-down (SAF): a leader that removes itself steps down only after the removal entry commits, and continues to replicate until it does. It never steps down on append and never remains leader in a config that excludes it once the removal is committed. | Simulator scenario `simraft-sim/tests/scenario_self_removal.rs` asserting role per tick around the commit point, then a fresh election in the new config. | M3 |
+| M-03 | Commit-then-step-down (SAF): a leader that removes itself steps down only after the removal entry commits, and continues to replicate until it does. It never steps down on append and never remains leader in a config that excludes it once the removal is committed. | Simulator scenario `simraft-sim/tests/scenario_self_removal.rs` asserting role per tick around the commit point, then a fresh election in the new config; core test `simraft-core/tests/property_membership.rs::leader_steps_down_only_after_self_removal_commits`. | M3 |
 | M-04 | Learner semantics (SAF): learners never vote, never start elections, and never count toward any quorum (election, commit, or ReadIndex). PromoteVoter rejects a learner whose match_index is below the leader's commit_index, naming both indexes. | Property tests `simraft-core/tests/property_membership.rs::learners_never_vote_or_count` and `::promotion_requires_caught_up_learner`. | M3 |
 | M-05 | Single-config quorums (SAF): every quorum decision (election win, commit advancement, ReadIndex confirmation) is computed against exactly one ClusterConfig, the newest whose entry exists in the deciding node's log. | Oracle `oracle::single_config_quorum` spot-checks decisions during simulator runs; code-level assertion in the quorum function exercised by `simraft-core/tests/property_membership.rs::quorum_uses_latest_single_config`. | M3 |
 
@@ -160,6 +160,15 @@ is the checklist they are audited against at every milestone gate.
     commit), and removes itself only into an empty config, which is
     rejected as a config error (a config must keep at least one voter).
     M-01, R-01, T-01 family (validation).
+
+Status at the M3 gate: property_membership enforces M-01, M-02,
+M-04, and M-05 plus the core half of M-03 (the simulator scenario
+its row names lands at M4); property_snapshot enforces N-01, N-02,
+N-04, and N-05; the kv codec suites enforce N-03
+(tamper_snapshot, property_snapshot_kv). The N-05 structural half
+and the M-05 oracle half stay with the M4 simulator work their
+rows name. Membership and snapshot error context joins E-01 in
+error_context. 56 tests pass across the workspace.
 
 Status at the M2 gate: property_commit enforces S-05 and S-06;
 property_readindex enforces R-01, R-02, and R-03 with the

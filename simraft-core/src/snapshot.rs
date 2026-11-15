@@ -25,10 +25,6 @@ pub struct SnapshotMeta {
 /// at the exact buffered length (invariant N-02); a chunk carrying a
 /// different identity replaces this buffer wholesale.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "M3 Stage A contract state; the Stage B chunk handler reads and fills it"
-)]
 pub(crate) struct IncomingSnapshot {
     /// The identity of the snapshot being received.
     pub meta: SnapshotMeta,
@@ -36,10 +32,6 @@ pub(crate) struct IncomingSnapshot {
     pub data: Vec<u8>,
 }
 
-#[allow(
-    dead_code,
-    reason = "M3 Stage A contract state; the Stage B chunk handler calls these"
-)]
 impl IncomingSnapshot {
     /// A fresh buffer for `meta` with no bytes yet.
     pub const fn new(meta: SnapshotMeta) -> Self {
@@ -60,10 +52,6 @@ impl IncomingSnapshot {
 /// below the snapshot base (invariant N-01), and by any node for its
 /// own log compaction once the driver persists it.
 #[derive(Debug, Clone)]
-#[allow(
-    dead_code,
-    reason = "M3 Stage A contract state; the Stage B snapshot sender and compactor read it"
-)]
 pub(crate) struct LoadedSnapshot {
     /// The identity of the loaded snapshot.
     pub meta: SnapshotMeta,

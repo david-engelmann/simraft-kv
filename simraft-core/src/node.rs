@@ -14,13 +14,13 @@
 
 use crate::action::{Action, ClientResult, ConfigResult};
 use crate::config::Config;
-use crate::error::ConfigError;
+use crate::error::{ConfigError, ProtocolError};
 use crate::event::{Event, PersistKind};
 use crate::ids::{ClientId, LogIndex, NodeId, Term, Tick};
 use crate::log::{EntryKind, Log, LogEntry};
 use crate::membership::{ClusterConfig, ConfigChange, ConfigState};
 use crate::message::Message;
-use crate::snapshot::{IncomingSnapshot, LoadedSnapshot};
+use crate::snapshot::{IncomingSnapshot, LoadedSnapshot, SnapshotMeta};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The role a node currently plays. Learner is a membership status, not
@@ -46,6 +46,11 @@ pub(crate) struct Progress {
     /// The highest index known to be held contiguously by this peer.
     /// Never decreases (invariant S-07).
     pub match_index: LogIndex,
+    /// In-flight snapshot relay to this peer, when it is being caught
+    /// up by `InstallSnapshot` instead of `AppendEntries`: the
+    /// snapshot's (last included index, last included term) and the
+    /// next chunk offset to send.
+    pub snapshot: Option<(LogIndex, Term, u64)>,
 }
 
 /// An action held back until the durable writes it depends on have been
@@ -87,6 +92,10 @@ pub struct Node {
     pub(crate) id: NodeId,
     pub(crate) config: Config,
     pub(crate) config_state: ConfigState,
+    pub(crate) initial_config: ClusterConfig,
+    pub(crate) base_config: ClusterConfig,
+    pub(crate) pending_config: Option<(LogIndex, ConfigChange)>,
+    pub(crate) pending_install: Option<SnapshotMeta>,
     pub(crate) seed: u64,
     pub(crate) role: Role,
     pub(crate) current_term: Term,
@@ -142,7 +151,10 @@ impl Node {
         let mut node = Self {
             id,
             config,
-            config_state: ConfigState::new(cluster),
+            config_state: ConfigState::new(cluster.clone()),
+            initial_config: cluster.clone(),
+            base_config: cluster,
+            pending_config: None,
             seed,
             role: Role::Follower,
             current_term: Term::ZERO,
@@ -279,7 +291,7 @@ impl Node {
             Event::SnapshotLoaded { meta, data } => {
                 self.loaded_snapshot = Some(LoadedSnapshot { meta, data });
             }
-            Event::SnapshotPersisted { .. } => {}
+            Event::SnapshotPersisted { meta } => self.on_snapshot_persisted(&meta),
             Event::Message { from, msg } => self.on_message(from, msg, &mut out),
             Event::Persisted { kind, up_to_index } => {
                 self.on_persisted(kind, up_to_index, &mut out);
@@ -412,6 +424,12 @@ impl Node {
         self.attached.clear();
         self.votes_received.clear();
         self.prevotes_received.clear();
+        self.base_config = self.initial_config.clone();
+        self.pending_config = None;
+        self.pending_install = None;
+        self.incoming_snapshot = None;
+        self.loaded_snapshot = None;
+        self.recompute_config();
         self.entries_durable_up_to = self.log.last_index();
         self.hard_gen_sent += 1;
         self.hard_gen_acked = self.hard_gen_sent;
@@ -436,7 +454,102 @@ impl Node {
         self.prevotes_received.clear();
         self.inflight.clear();
         self.attached.clear();
+        self.pending_config = None;
         self.last_read_round = 0;
+    }
+
+    /// Rebuild `config_state` from the log and the commit index: the
+    /// newest config entry in the log is the latest configuration,
+    /// the newest at or below `commit_index` is the committed one,
+    /// and the snapshot base configuration rules when the log holds
+    /// no config entry above the base (invariant M-05's single source
+    /// of truth).
+    fn recompute_config(&mut self) {
+        let mut latest = self.base_config.clone();
+        let mut committed = self.base_config.clone();
+        let mut last_config_index = if self.log.base_index() > LogIndex::ZERO {
+            self.log.base_index()
+        } else {
+            LogIndex::ZERO
+        };
+        let base = self.log.base_index().0;
+        for (offset, entry) in self.log.entries().iter().enumerate() {
+            if let EntryKind::Config { config } = &entry.kind {
+                let index = LogIndex(base + 1 + offset as u64);
+                latest = config.clone();
+                last_config_index = index;
+                if index <= self.commit_index {
+                    committed = config.clone();
+                }
+            }
+        }
+        self.config_state = ConfigState {
+            latest,
+            committed,
+            last_config_index,
+        };
+    }
+
+    /// Step down after this leader's own removal from the committed
+    /// configuration (invariant M-03): the removal has replicated and
+    /// committed, so leadership ends here, never earlier.
+    fn step_down_after_removal(&mut self, out: &mut Vec<Action>) {
+        out.push(Action::StepDown {
+            term: self.current_term,
+        });
+        self.fail_pending_reads(out);
+        self.role = Role::Follower;
+        self.leader_id = None;
+        self.progress.clear();
+        self.inflight.clear();
+        self.attached.clear();
+    }
+
+    /// Bookkeeping for a config entry that has just applied: answer
+    /// the pending proposal, sync leader progress to the new
+    /// membership, and step down if this leader was removed.
+    fn on_config_applied(
+        &mut self,
+        index: LogIndex,
+        config: &ClusterConfig,
+        out: &mut Vec<Action>,
+    ) {
+        self.recompute_config();
+        if let Some((pending_index, change)) = self.pending_config.take() {
+            if pending_index == index {
+                self.defer_or_emit(
+                    out,
+                    Action::ConfigResponse {
+                        change,
+                        result: ConfigResult::Committed,
+                    },
+                    0,
+                    index,
+                );
+            } else {
+                self.pending_config = Some((pending_index, change));
+            }
+        }
+        if self.role != Role::Leader {
+            return;
+        }
+        let next = self.log.last_index().next();
+        for member in config.members() {
+            if member != self.id && !self.progress.contains_key(&member) {
+                self.progress.insert(
+                    member,
+                    Progress {
+                        next_index: next,
+                        match_index: LogIndex::ZERO,
+                        snapshot: None,
+                    },
+                );
+            }
+        }
+        self.progress.retain(|peer, _| config.contains(*peer));
+        if !config.is_voter(self.id) {
+            self.step_down_after_removal(out);
+        }
     }
 
     /// Reject every read in the pending `ReadIndex` batch: this node is
@@ -719,6 +832,17 @@ impl Node {
     /// Emit an `AppendEntries` to `peer`, holding it back if it carries
     /// entries that are not yet durable locally (T-02).
     fn send_append(&mut self, peer: NodeId, out: &mut Vec<Action>) {
+        // A peer whose next index has fallen to or below the snapshot
+        // base is caught up by InstallSnapshot, not AppendEntries
+        // (invariant N-01).
+        let next = self
+            .progress
+            .get(&peer)
+            .map_or_else(|| self.log.last_index().next(), |prog| prog.next_index);
+        if self.log.base_index() > LogIndex::ZERO && next <= self.log.base_index() {
+            self.send_snapshot_chunk(peer, out);
+            return;
+        }
         let round = self.pending_reads.as_ref().map_or(0, |batch| batch.round);
         let msg = self.build_append(peer, round);
         let mut need = LogIndex::ZERO;
@@ -733,6 +857,240 @@ impl Node {
             }
         }
         self.defer_or_emit(out, Action::Send { to: peer, msg }, 0, need);
+    }
+
+    /// The metadata of the snapshot this node's log base represents.
+    fn base_meta(&self) -> SnapshotMeta {
+        SnapshotMeta {
+            last_included_index: self.log.base_index(),
+            last_included_term: self.log.base_term(),
+            config: self.base_config.clone(),
+        }
+    }
+
+    /// Send the next `InstallSnapshot` chunk to `peer`, or ask the
+    /// driver to load the base snapshot when its bytes are not in
+    /// memory (docs/ARCHITECTURE.md section 9, snapshot relay).
+    fn send_snapshot_chunk(&mut self, peer: NodeId, out: &mut Vec<Action>) {
+        let meta = self.base_meta();
+        let Some(loaded) = &self.loaded_snapshot else {
+            out.push(Action::LoadSnapshot { meta });
+            return;
+        };
+        if loaded.meta != meta {
+            out.push(Action::LoadSnapshot { meta });
+            return;
+        }
+        let loaded = loaded.clone();
+        let chunk = usize::try_from(self.config.snapshot_chunk_bytes).unwrap_or(usize::MAX);
+        let Some(prog) = self.progress.get_mut(&peer) else {
+            return;
+        };
+        let offset = match prog.snapshot {
+            Some((index, term, next_offset))
+                if index == meta.last_included_index && term == meta.last_included_term =>
+            {
+                next_offset
+            }
+            _ => 0,
+        };
+        let start = usize::try_from(offset)
+            .unwrap_or(usize::MAX)
+            .min(loaded.data.len());
+        let end = start.saturating_add(chunk).min(loaded.data.len());
+        let done = end == loaded.data.len();
+        prog.snapshot = Some((
+            meta.last_included_index,
+            meta.last_included_term,
+            end as u64,
+        ));
+        out.push(Action::Send {
+            to: peer,
+            msg: Message::InstallSnapshot {
+                term: self.current_term,
+                last_included_index: meta.last_included_index,
+                last_included_term: meta.last_included_term,
+                config: meta.config.clone(),
+                offset,
+                data: loaded.data[start..end].to_vec(),
+                done,
+            },
+        });
+    }
+
+    /// Handle an `InstallSnapshot` chunk (docs/ARCHITECTURE.md
+    /// sections 7.4 and 9): assemble chunks for exactly one snapshot
+    /// identity at exactly the buffered offsets (N-02), then hand the
+    /// assembled payload to the driver to persist; the install itself
+    /// happens when the persist is acknowledged (T-02's shape).
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "one argument per InstallSnapshot field keeps the handler aligned with the message layout"
+    )]
+    fn on_install_snapshot(
+        &mut self,
+        from: NodeId,
+        term: Term,
+        meta: SnapshotMeta,
+        offset: u64,
+        data: &[u8],
+        done: bool,
+        out: &mut Vec<Action>,
+    ) {
+        let respond = |out: &mut Vec<Action>, term: Term, match_index: LogIndex| {
+            out.push(Action::Send {
+                to: from,
+                msg: Message::InstallSnapshotResponse { term, match_index },
+            });
+        };
+        if term < self.current_term {
+            respond(out, self.current_term, self.log.base_index());
+            return;
+        }
+        if term > self.current_term {
+            self.set_term(term, out);
+            let _ = self.emit_persist_hard(out);
+        } else if self.role == Role::Leader {
+            out.push(Action::StepDown { term });
+            self.fail_pending_reads(out);
+            self.role = Role::Follower;
+            self.progress.clear();
+            self.inflight.clear();
+            self.attached.clear();
+            self.pending_config = None;
+        } else {
+            self.role = Role::Follower;
+        }
+        self.leader_id = Some(from);
+        self.last_leader_contact = Some(self.now);
+        self.reset_election_deadline();
+
+        // A snapshot at or below the base is already installed here.
+        if meta.last_included_index <= self.log.base_index() {
+            respond(out, self.current_term, self.log.base_index());
+            return;
+        }
+        // One buffer for one snapshot identity: a chunk for a
+        // different snapshot discards the old buffer exactly once.
+        let fresh = self
+            .incoming_snapshot
+            .as_ref()
+            .is_none_or(|incoming| incoming.meta != meta);
+        if fresh {
+            self.incoming_snapshot = Some(IncomingSnapshot::new(meta.clone()));
+        }
+        let expected = self
+            .incoming_snapshot
+            .as_ref()
+            .map_or(0, IncomingSnapshot::expected_offset);
+        if offset != expected {
+            // Rejected: the buffer keeps exactly what it held, and
+            // the response reports the pre-install base, so the
+            // leader learns nothing was installed (invariant N-02;
+            // the rejection carries SnapshotError::ChunkOffset's
+            // values on the driver side).
+            respond(out, self.current_term, self.log.base_index());
+            return;
+        }
+        if let Some(incoming) = &mut self.incoming_snapshot {
+            incoming.data.extend_from_slice(data);
+        }
+        if done {
+            if let Some(incoming) = self.incoming_snapshot.take() {
+                self.pending_install = Some(meta.clone());
+                out.push(Action::PersistSnapshot {
+                    meta,
+                    data: incoming.data,
+                });
+            }
+        }
+        respond(out, self.current_term, self.log.base_index());
+    }
+
+    /// Handle an `InstallSnapshotResponse`: a follower whose reported
+    /// match reaches the snapshot base has installed it, so its relay
+    /// state clears and normal replication resumes.
+    fn on_snapshot_response(
+        &mut self,
+        from: NodeId,
+        term: Term,
+        match_index: LogIndex,
+        out: &mut Vec<Action>,
+    ) {
+        if term > self.current_term {
+            self.set_term(term, out);
+            let _ = self.emit_persist_hard(out);
+            return;
+        }
+        if self.role != Role::Leader || term < self.current_term {
+            return;
+        }
+        let mut advance = false;
+        if let Some(prog) = self.progress.get_mut(&from) {
+            if match_index > prog.match_index {
+                prog.match_index = match_index;
+                advance = true;
+            }
+            if prog.next_index < prog.match_index.next() {
+                prog.next_index = prog.match_index.next();
+            }
+            if match_index >= self.log.base_index() {
+                prog.snapshot = None;
+            }
+        }
+        if advance {
+            self.advance_commit(out);
+        }
+    }
+
+    /// A snapshot the driver persisted is installed now: a received
+    /// snapshot installs unconditionally, and this node's own
+    /// snapshot compacts the log only up to the commit index, never
+    /// past it (invariant N-05). The loaded bytes stay in memory so a
+    /// leader can relay them to lagging peers.
+    fn on_snapshot_persisted(&mut self, meta: &SnapshotMeta) {
+        if self.pending_install.as_ref() == Some(meta) {
+            self.pending_install = None;
+            self.install_snapshot(meta);
+            return;
+        }
+        if let Some(loaded) = &self.loaded_snapshot {
+            if loaded.meta == *meta && meta.last_included_index <= self.commit_index {
+                self.install_snapshot(meta);
+            }
+        }
+    }
+
+    /// Install `meta`'s snapshot boundary into the log: retain the
+    /// suffix when the entry at the boundary matches the snapshot's
+    /// term, discard the whole log otherwise (N-04), and jump the
+    /// commit and apply cursors to the boundary (section 4.2).
+    fn install_snapshot(&mut self, meta: &SnapshotMeta) {
+        let index = meta.last_included_index;
+        if index < self.log.base_index() {
+            return;
+        }
+        if self.log.term_at(index) == Some(meta.last_included_term) {
+            self.log.advance_base(index, meta.last_included_term);
+        } else {
+            self.log.clear_entries();
+            self.log.advance_base(index, meta.last_included_term);
+        }
+        if self.commit_index < index {
+            self.commit_index = index;
+        }
+        if self.last_applied < index {
+            self.last_applied = index;
+        }
+        self.base_config = meta.config.clone();
+        self.inflight.retain(|_, entry_index| *entry_index > index);
+        self.attached.retain(|entry_index, _| *entry_index > index);
+        if let Some(incoming) = &self.incoming_snapshot {
+            if incoming.meta.last_included_index <= index {
+                self.incoming_snapshot = None;
+            }
+        }
+        self.recompute_config();
     }
 
     /// Advance the leader's commit index by counting replicas, but only
@@ -785,6 +1143,10 @@ impl Node {
                 0,
                 index,
             );
+            if let EntryKind::Config { config } = &entry.kind {
+                let config = config.clone();
+                self.on_config_applied(index, &config, out);
+            }
             if let EntryKind::Command { client_id, seq, .. } = entry.kind {
                 self.defer_or_emit(
                     out,
@@ -873,32 +1235,117 @@ impl Node {
                 read_round,
                 out,
             ),
-            Message::InstallSnapshot { .. } => {
-                // Stage A stub: acknowledge with the current base and
-                // buffer nothing. Chunk assembly and install land at
-                // Stage B.
-                out.push(Action::Send {
-                    to: from,
-                    msg: Message::InstallSnapshotResponse {
-                        term: self.current_term,
-                        match_index: self.log.base_index(),
-                    },
-                });
+            Message::InstallSnapshot {
+                term,
+                last_included_index,
+                last_included_term,
+                config,
+                offset,
+                data,
+                done,
+            } => self.on_install_snapshot(
+                from,
+                term,
+                SnapshotMeta {
+                    last_included_index,
+                    last_included_term,
+                    config,
+                },
+                offset,
+                &data,
+                done,
+                out,
+            ),
+            Message::InstallSnapshotResponse { term, match_index } => {
+                self.on_snapshot_response(from, term, match_index, out);
             }
-            Message::InstallSnapshotResponse { .. } => {}
         }
     }
 
-    /// Stage A stub for membership changes: every proposal is answered
-    /// `NotLeader` until the Stage B implementation lands. The red
-    /// suites in `tests/property_membership.rs` pin the real behavior.
-    fn on_propose_config(&self, change: ConfigChange, out: &mut Vec<Action>) {
-        out.push(Action::ConfigResponse {
-            change,
-            result: ConfigResult::NotLeader {
-                leader: self.leader_id,
-            },
+    /// Handle a membership change proposal (docs/ARCHITECTURE.md
+    /// section 9). The leader gates the change on its election `NoOp`
+    /// (M-02), on any earlier uncommitted change (M-01), on the
+    /// set-level rules, and on learner catch-up for promotions
+    /// (M-04), then appends one config entry. The proposal is
+    /// answered when that entry applies (see `on_config_applied`), or
+    /// immediately when any gate rejects it.
+    fn on_propose_config(&mut self, change: ConfigChange, out: &mut Vec<Action>) {
+        let reject = |out: &mut Vec<Action>, error: ProtocolError| {
+            out.push(Action::ConfigResponse {
+                change,
+                result: ConfigResult::Rejected { error },
+            });
+        };
+        if self.role != Role::Leader {
+            out.push(Action::ConfigResponse {
+                change,
+                result: ConfigResult::NotLeader {
+                    leader: self.leader_id,
+                },
+            });
+            return;
+        }
+        if let Some(noop_index) = self.log.first_index_of_term(self.current_term) {
+            if self.commit_index < noop_index {
+                reject(
+                    out,
+                    ProtocolError::LeaderNoopUncommitted {
+                        noop_index,
+                        commit_index: self.commit_index,
+                    },
+                );
+                return;
+            }
+        }
+        if self.config_state.last_config_index > self.commit_index {
+            reject(
+                out,
+                ProtocolError::ConfigChangePending {
+                    last_config_index: self.config_state.last_config_index,
+                    commit_index: self.commit_index,
+                },
+            );
+            return;
+        }
+        let new_config = match self.config_state.latest.apply_change(change) {
+            Ok(config) => config,
+            Err(error) => {
+                reject(out, error);
+                return;
+            }
+        };
+        if let ConfigChange::PromoteVoter { node } = change {
+            let matched = self
+                .progress
+                .get(&node)
+                .map_or(LogIndex::ZERO, |prog| prog.match_index);
+            if matched < self.commit_index {
+                reject(
+                    out,
+                    ProtocolError::LearnerNotCaughtUp {
+                        node,
+                        match_index: matched,
+                        required: self.commit_index,
+                    },
+                );
+                return;
+            }
+        }
+        let entries = vec![LogEntry {
+            term: self.current_term,
+            kind: EntryKind::Config { config: new_config },
+        }];
+        let first = self.log.append(&entries);
+        self.pending_config = Some((first, change));
+        out.push(Action::PersistEntries {
+            from_index: first,
+            entries,
         });
+        self.recompute_config();
+        let peers: Vec<NodeId> = self.progress.keys().copied().collect();
+        for peer in peers {
+            self.send_append(peer, out);
+        }
     }
 
     fn on_request_vote(
@@ -925,6 +1372,18 @@ impl Node {
         } else {
             false
         };
+        // Learners never vote (M-04): they answer, but never grant,
+        // and they never record a vote for themselves.
+        if !self.config_state.latest.is_voter(self.id) {
+            out.push(Action::Send {
+                to: from,
+                msg: Message::RequestVoteResponse {
+                    term: self.current_term,
+                    vote_granted: false,
+                },
+            });
+            return;
+        }
         let grant = (self.voted_for.is_none() || self.voted_for == Some(from))
             && self.log_up_to_date(last_log_term, last_log_index);
         if grant {
@@ -961,7 +1420,11 @@ impl Node {
             let _ = self.emit_persist_hard(out);
             return;
         }
-        if self.role == Role::Candidate && term == self.current_term && vote_granted {
+        if self.role == Role::Candidate
+            && term == self.current_term
+            && vote_granted
+            && self.config_state.latest.is_voter(from)
+        {
             self.votes_received.insert(from);
             if self.votes_received.len() >= self.config_state.latest.quorum() {
                 self.become_leader(out);
@@ -1008,7 +1471,10 @@ impl Node {
             let _ = self.emit_persist_hard(out);
             return;
         }
-        if self.role == Role::PreCandidate && vote_granted {
+        if self.role == Role::PreCandidate
+            && vote_granted
+            && self.config_state.latest.is_voter(from)
+        {
             self.prevotes_received.insert(from);
             if self.prevotes_received.len() >= self.config_state.latest.quorum() {
                 self.start_election(out);
@@ -1063,6 +1529,38 @@ impl Node {
         self.leader_id = Some(from);
         self.last_leader_contact = Some(self.now);
         self.reset_election_deadline();
+
+        // The leader is replicating from below our snapshot base:
+        // everything up to the base is already installed here, so the
+        // batch verifies trivially and only the commit can advance.
+        if prev_log_index < self.log.base_index() {
+            let new_commit = leader_commit.min(self.log.last_index());
+            if new_commit > self.commit_index {
+                self.commit_index = new_commit;
+                self.emit_applies(out);
+            }
+            if read_round > self.last_read_round {
+                self.last_read_round = read_round;
+            }
+            let response = Action::Send {
+                to: from,
+                msg: Message::AppendEntriesResponse {
+                    term: self.current_term,
+                    success: true,
+                    match_index: self.log.base_index(),
+                    conflict_index: LogIndex::ZERO,
+                    conflict_term: Term::ZERO,
+                    read_round: self.last_read_round,
+                },
+            };
+            if hard_changed {
+                let generation = self.emit_persist_hard(out);
+                self.defer_or_emit(out, response, generation, LogIndex::ZERO);
+            } else {
+                out.push(response);
+            }
+            return;
+        }
 
         // Consistency check with the fast-backup conflict hint (S-08).
         let rejection = if prev_log_index > self.log.last_index() {
@@ -1186,6 +1684,7 @@ impl Node {
             self.commit_index = new_commit;
             self.emit_applies(out);
         }
+        self.recompute_config();
         need_entries
     }
 
@@ -1235,7 +1734,7 @@ impl Node {
             // release the batch if the commit gate also holds.
             if read_round != 0 {
                 if let Some(batch) = &mut self.pending_reads {
-                    if batch.round == read_round {
+                    if batch.round == read_round && self.config_state.latest.is_voter(from) {
                         batch.acks.insert(from);
                     }
                 }

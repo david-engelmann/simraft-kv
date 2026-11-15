@@ -54,3 +54,47 @@ fn empty_voters_error_is_explicit() {
     assert_eq!(err, ConfigError::EmptyVoters);
     assert!(err.to_string().contains("at least one voter"));
 }
+
+#[test]
+fn membership_rejections_name_the_deciding_values() {
+    use simraft_core::{LogIndex, NodeId, ProtocolError};
+    let pending = ProtocolError::ConfigChangePending {
+        last_config_index: LogIndex::new(7),
+        commit_index: LogIndex::new(3),
+    }
+    .to_string();
+    assert!(pending.contains("index 7"), "got: {pending}");
+    assert!(pending.contains("commit index 3"), "got: {pending}");
+    let noop = ProtocolError::LeaderNoopUncommitted {
+        noop_index: LogIndex::new(1),
+        commit_index: LogIndex::ZERO,
+    }
+    .to_string();
+    assert!(noop.contains("NoOp at index 1"), "got: {noop}");
+    assert!(noop.contains("commit index 0"), "got: {noop}");
+    let caught = ProtocolError::LearnerNotCaughtUp {
+        node: NodeId::new(4),
+        match_index: LogIndex::new(2),
+        required: LogIndex::new(5),
+    }
+    .to_string();
+    assert!(caught.contains("learner 4"), "got: {caught}");
+    assert!(caught.contains("match index 2"), "got: {caught}");
+    assert!(caught.contains("required index 5"), "got: {caught}");
+}
+
+#[test]
+fn snapshot_rejection_names_identity_and_offsets() {
+    use simraft_core::{LogIndex, SnapshotError, Term};
+    let err = SnapshotError::ChunkOffset {
+        last_included_index: LogIndex::new(9),
+        last_included_term: Term::new(3),
+        expected_offset: 12,
+        received_offset: 40,
+    }
+    .to_string();
+    assert!(err.contains("index 9"), "got: {err}");
+    assert!(err.contains("term 3"), "got: {err}");
+    assert!(err.contains("offset 40"), "got: {err}");
+    assert!(err.contains("expected offset 12"), "got: {err}");
+}
