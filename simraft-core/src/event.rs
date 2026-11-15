@@ -37,6 +37,19 @@ pub enum Event {
         /// The current virtual time.
         now: Tick,
     },
+    /// A client asks the leader for a linearizable read of `key`.
+    ///
+    /// The core runs the `ReadIndex` protocol (docs/ARCHITECTURE.md
+    /// section 8) and answers with `Action::ReadReady` once the read is
+    /// safe to serve, or `Action::ReadRejected` when this node cannot
+    /// serve it. The key is carried opaquely; the value lives in the
+    /// state machine, not the core.
+    ReadIndex {
+        /// The client-chosen correlation id for this read.
+        request_id: u64,
+        /// The key to read.
+        key: Vec<u8>,
+    },
     /// A client proposes a command to this node.
     Propose {
         /// The proposing client.

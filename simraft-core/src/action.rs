@@ -59,6 +59,25 @@ pub enum Action {
         /// The entry to apply.
         entry: LogEntry,
     },
+    /// A `ReadIndex` read is confirmed linearizable. The driver serves
+    /// the value of `key` from its state machine once its applied index
+    /// reaches `read_index`, and must not serve a newer-or-older value.
+    ReadReady {
+        /// The correlation id from `Event::ReadIndex`.
+        request_id: u64,
+        /// The key that was read.
+        key: Vec<u8>,
+        /// The commit index the read is pinned to.
+        read_index: LogIndex,
+    },
+    /// A `ReadIndex` read cannot be served by this node (it is not the
+    /// leader, or it stopped being the leader mid-round).
+    ReadRejected {
+        /// The correlation id from `Event::ReadIndex`.
+        request_id: u64,
+        /// The known leader, if any.
+        leader: Option<NodeId>,
+    },
     /// Answer a client proposal.
     ClientResponse {
         /// The proposing client.

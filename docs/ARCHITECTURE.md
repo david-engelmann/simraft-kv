@@ -825,6 +825,20 @@ because replication correctness depends on it; its dedicated property
 suite and the ReadIndex machinery that builds on it land at M2 as
 scheduled.
 
+Status at the M2 gate: M2 is implemented as described. The ReadIndex
+machinery of section 8 runs as specified, with two as-built notes: a
+follower remembers the highest round token it has seen from its
+current leader and echoes that value on every successful response (a
+response to any append can therefore confirm a round), and a leader
+that steps down mid-round rejects the batched reads rather than
+letting them hang. The in-flight half of section 10 dedup is
+implemented with an index from (client, seq) to log position covering
+exactly the uncommitted tail, which is the efficient equivalent of
+the uncommitted-tail scan the section describes; the committed half
+lives in simraft-kv's session table as specified, including the
+eviction contract. The Figure 8 suite of section 6.3 now enforces
+the rule that landed at M1.
+
 Each implementation milestone runs in two stages. Stage A lands public
 interfaces, doc comments, structural assertions, and property or fault tests
 that fail because the logic is unimplemented (todo and unimplemented are
