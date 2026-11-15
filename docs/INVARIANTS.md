@@ -168,7 +168,7 @@ N-04, and N-05; the kv codec suites enforce N-03
 (tamper_snapshot, property_snapshot_kv). The N-05 structural half
 and the M-05 oracle half stay with the M4 simulator work their
 rows name. Membership and snapshot error context joins E-01 in
-error_context. 56 tests pass across the workspace.
+error_context. 57 tests pass across the workspace.
 
 Status at the M2 gate: property_commit enforces S-05 and S-06;
 property_readindex enforces R-01, R-02, and R-03 with the
