@@ -884,7 +884,7 @@ impl Node {
             return;
         }
         let loaded = loaded.clone();
-        let chunk = usize::try_from(self.config.snapshot_chunk_bytes).unwrap_or(usize::MAX);
+        let chunk = self.config.snapshot_chunk_bytes;
         let Some(prog) = self.progress.get_mut(&peer) else {
             return;
         };
@@ -912,7 +912,7 @@ impl Node {
                 term: self.current_term,
                 last_included_index: meta.last_included_index,
                 last_included_term: meta.last_included_term,
-                config: meta.config.clone(),
+                config: meta.config,
                 offset,
                 data: loaded.data[start..end].to_vec(),
                 done,
@@ -1072,12 +1072,10 @@ impl Node {
         if index < self.log.base_index() {
             return;
         }
-        if self.log.term_at(index) == Some(meta.last_included_term) {
-            self.log.advance_base(index, meta.last_included_term);
-        } else {
+        if self.log.term_at(index) != Some(meta.last_included_term) {
             self.log.clear_entries();
-            self.log.advance_base(index, meta.last_included_term);
         }
+        self.log.advance_base(index, meta.last_included_term);
         if self.commit_index < index {
             self.commit_index = index;
         }
@@ -1484,6 +1482,45 @@ impl Node {
         }
     }
 
+    /// Answer an `AppendEntries` whose previous index sits below
+    /// this node's snapshot base: the entries it could carry are
+    /// already installed here, so only the commit index can advance,
+    /// and the response reports the base as the matched index.
+    fn on_append_below_base(
+        &mut self,
+        from: NodeId,
+        leader_commit: LogIndex,
+        read_round: u64,
+        hard_changed: bool,
+        out: &mut Vec<Action>,
+    ) {
+        let new_commit = leader_commit.min(self.log.last_index());
+        if new_commit > self.commit_index {
+            self.commit_index = new_commit;
+            self.emit_applies(out);
+        }
+        if read_round > self.last_read_round {
+            self.last_read_round = read_round;
+        }
+        let response = Action::Send {
+            to: from,
+            msg: Message::AppendEntriesResponse {
+                term: self.current_term,
+                success: true,
+                match_index: self.log.base_index(),
+                conflict_index: LogIndex::ZERO,
+                conflict_term: Term::ZERO,
+                read_round: self.last_read_round,
+            },
+        };
+        if hard_changed {
+            let generation = self.emit_persist_hard(out);
+            self.defer_or_emit(out, response, generation, LogIndex::ZERO);
+        } else {
+            out.push(response);
+        }
+    }
+
     #[allow(
         clippy::too_many_arguments,
         reason = "one argument per AppendEntries field keeps the handler aligned with the message layout"
@@ -1536,31 +1573,7 @@ impl Node {
         // everything up to the base is already installed here, so the
         // batch verifies trivially and only the commit can advance.
         if prev_log_index < self.log.base_index() {
-            let new_commit = leader_commit.min(self.log.last_index());
-            if new_commit > self.commit_index {
-                self.commit_index = new_commit;
-                self.emit_applies(out);
-            }
-            if read_round > self.last_read_round {
-                self.last_read_round = read_round;
-            }
-            let response = Action::Send {
-                to: from,
-                msg: Message::AppendEntriesResponse {
-                    term: self.current_term,
-                    success: true,
-                    match_index: self.log.base_index(),
-                    conflict_index: LogIndex::ZERO,
-                    conflict_term: Term::ZERO,
-                    read_round: self.last_read_round,
-                },
-            };
-            if hard_changed {
-                let generation = self.emit_persist_hard(out);
-                self.defer_or_emit(out, response, generation, LogIndex::ZERO);
-            } else {
-                out.push(response);
-            }
+            self.on_append_below_base(from, leader_commit, read_round, hard_changed, out);
             return;
         }
 
