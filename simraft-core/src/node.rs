@@ -155,6 +155,7 @@ impl Node {
             initial_config: cluster.clone(),
             base_config: cluster,
             pending_config: None,
+            pending_install: None,
             seed,
             role: Role::Follower,
             current_term: Term::ZERO,
@@ -670,6 +671,7 @@ impl Node {
                     Progress {
                         next_index: next,
                         match_index: LogIndex::ZERO,
+                        snapshot: None,
                     },
                 )
             })
