@@ -43,10 +43,10 @@ and tied to a test that would fail if the promise broke.
   as final just because most servers hold a copy of it.
 - Linearizable reads through the ReadIndex protocol, with client
   request deduplication on both sides of a commit, in flight and
-  after the fact. This part is finished and under review as
+  after the fact. This part landed as
   milestone M2.
 
-Snapshots and membership changes arrive at M3. The simulator, the
+Snapshots and membership changes are in progress as milestone M3. The simulator, the
 checker, and the command line tools arrive at M4.
 
 ## How it is used
