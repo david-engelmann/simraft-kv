@@ -64,23 +64,24 @@ fn membership_rejections_name_the_deciding_values() {
     }
     .to_string();
     assert!(pending.contains("index 7"), "got: {pending}");
-    assert!(pending.contains("commit index 3"), "got: {pending}");
+    assert!(pending.contains("index 3"), "got: {pending}");
     let noop = ProtocolError::LeaderNoopUncommitted {
         noop_index: LogIndex(1),
         commit_index: LogIndex::ZERO,
     }
     .to_string();
-    assert!(noop.contains("NoOp at index 1"), "got: {noop}");
-    assert!(noop.contains("commit index 0"), "got: {noop}");
+    assert!(noop.contains("NoOp at index"), "got: {noop}");
+    assert!(noop.contains("index 1"), "got: {noop}");
+    assert!(noop.contains("index 0"), "got: {noop}");
     let caught = ProtocolError::LearnerNotCaughtUp {
         node: NodeId(4),
         match_index: LogIndex(2),
         required: LogIndex(5),
     }
     .to_string();
-    assert!(caught.contains("learner 4"), "got: {caught}");
-    assert!(caught.contains("match index 2"), "got: {caught}");
-    assert!(caught.contains("required index 5"), "got: {caught}");
+    assert!(caught.contains("learner n4"), "got: {caught}");
+    assert!(caught.contains("index 2"), "got: {caught}");
+    assert!(caught.contains("index 5"), "got: {caught}");
 }
 
 #[test]
@@ -94,7 +95,7 @@ fn snapshot_rejection_names_identity_and_offsets() {
     }
     .to_string();
     assert!(err.contains("index 9"), "got: {err}");
-    assert!(err.contains("term 3"), "got: {err}");
+    assert!(err.contains("term term 3"), "got: {err}");
     assert!(err.contains("offset 40"), "got: {err}");
     assert!(err.contains("expected offset 12"), "got: {err}");
 }

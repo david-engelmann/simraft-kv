@@ -6,6 +6,11 @@
 //! replacement, the prefix retention rule on install, and compaction
 //! that never crosses the commit boundary.
 
+#![allow(
+    dead_code,
+    reason = "the shared test harness is included whole; this suite uses only its free helpers"
+)]
+
 mod common;
 
 use common::{all_voters, elect};
@@ -48,7 +53,7 @@ fn persist_snapshots(actions: &[Action]) -> Vec<&Action> {
         .collect()
 }
 
-fn append_response(from: u64, term: Term, match_index: u64) -> Event {
+const fn append_response(from: u64, term: Term, match_index: u64) -> Event {
     Event::Message {
         from: NodeId(from),
         msg: Message::AppendEntriesResponse {
@@ -230,7 +235,7 @@ fn matching_prefix_retained_divergent_log_discarded() {
         LogIndex(3),
         "N-04: a divergent log is discarded whole"
     );
-    assert!(divergent.log().entries().is_empty());
+    assert_eq!(divergent.log().entries().len(), 0);
 }
 
 #[test]

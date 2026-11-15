@@ -6,6 +6,11 @@
 //! count, promotion requires a caught-up learner, and every quorum is
 //! computed against exactly one configuration, the newest in the log.
 
+#![allow(
+    dead_code,
+    reason = "the shared test harness is included whole; this suite uses only its free helpers"
+)]
+
 mod common;
 
 use common::elect;
