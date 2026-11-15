@@ -12,14 +12,15 @@
 //! queue and released only by the matching `Event::Persisted`
 //! (invariant T-02).
 
-use crate::action::{Action, ClientResult};
+use crate::action::{Action, ClientResult, ConfigResult};
 use crate::config::Config;
 use crate::error::ConfigError;
 use crate::event::{Event, PersistKind};
 use crate::ids::{ClientId, LogIndex, NodeId, Term, Tick};
 use crate::log::{EntryKind, Log, LogEntry};
-use crate::membership::ClusterConfig;
+use crate::membership::{ClusterConfig, ConfigChange, ConfigState};
 use crate::message::Message;
+use crate::snapshot::{IncomingSnapshot, LoadedSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The role a node currently plays. Learner is a membership status, not
@@ -85,7 +86,7 @@ pub(crate) struct ReadBatch {
 pub struct Node {
     pub(crate) id: NodeId,
     pub(crate) config: Config,
-    pub(crate) cluster: ClusterConfig,
+    pub(crate) config_state: ConfigState,
     pub(crate) seed: u64,
     pub(crate) role: Role,
     pub(crate) current_term: Term,
@@ -109,6 +110,12 @@ pub struct Node {
     pub(crate) last_read_round: u64,
     pub(crate) inflight: BTreeMap<(ClientId, u64), LogIndex>,
     pub(crate) attached: BTreeMap<LogIndex, u64>,
+    #[allow(
+        dead_code,
+        reason = "M3 Stage A contract state; the Stage B chunk handler consumes it"
+    )]
+    pub(crate) incoming_snapshot: Option<IncomingSnapshot>,
+    pub(crate) loaded_snapshot: Option<LoadedSnapshot>,
     pub(crate) hard_gen_sent: u64,
     pub(crate) hard_gen_acked: u64,
     pub(crate) entries_durable_up_to: LogIndex,
@@ -135,7 +142,7 @@ impl Node {
         let mut node = Self {
             id,
             config,
-            cluster,
+            config_state: ConfigState::new(cluster),
             seed,
             role: Role::Follower,
             current_term: Term::ZERO,
@@ -159,6 +166,8 @@ impl Node {
             last_read_round: 0,
             inflight: BTreeMap::new(),
             attached: BTreeMap::new(),
+            incoming_snapshot: None,
+            loaded_snapshot: None,
             hard_gen_sent: 0,
             hard_gen_acked: 0,
             entries_durable_up_to: LogIndex::ZERO,
@@ -212,7 +221,16 @@ impl Node {
     /// The current cluster configuration.
     #[must_use]
     pub const fn cluster(&self) -> &ClusterConfig {
-        &self.cluster
+        &self.config_state.latest
+    }
+
+    /// The log index of the newest config entry in this node's log, or
+    /// 0 when the log holds none (the construction configuration
+    /// rules). A leader rejects a new config change while this index
+    /// is above its commit index (invariant M-01).
+    #[must_use]
+    pub const fn last_config_index(&self) -> LogIndex {
+        self.config_state.last_config_index
     }
 
     /// The node's current best hint for the leader's identity.
@@ -257,6 +275,11 @@ impl Node {
             Event::ReadIndex { request_id, key } => {
                 self.on_read_index(request_id, key, &mut out);
             }
+            Event::ProposeConfig { change } => self.on_propose_config(change, &mut out),
+            Event::SnapshotLoaded { meta, data } => {
+                self.loaded_snapshot = Some(LoadedSnapshot { meta, data });
+            }
+            Event::SnapshotPersisted { .. } => {}
             Event::Message { from, msg } => self.on_message(from, msg, &mut out),
             Event::Persisted { kind, up_to_index } => {
                 self.on_persisted(kind, up_to_index, &mut out);
@@ -437,7 +460,9 @@ impl Node {
         let Some(batch) = &self.pending_reads else {
             return;
         };
-        if batch.acks.len() < self.cluster.quorum() || self.commit_index < batch.gate_index {
+        if batch.acks.len() < self.config_state.latest.quorum()
+            || self.commit_index < batch.gate_index
+        {
             return;
         }
         let read_index = self.commit_index;
@@ -464,7 +489,7 @@ impl Node {
         self.prevote_term = self.current_term.next();
         self.prevotes_received = BTreeSet::from([self.id]);
         self.reset_election_deadline();
-        if self.prevotes_received.len() >= self.cluster.quorum() {
+        if self.prevotes_received.len() >= self.config_state.latest.quorum() {
             self.start_election(out);
             return;
         }
@@ -473,7 +498,7 @@ impl Node {
             last_log_index: self.log.last_index(),
             last_log_term: self.log.last_term(),
         };
-        for voter in self.cluster.voters.iter().copied() {
+        for voter in self.config_state.latest.voters.iter().copied() {
             if voter != self.id {
                 out.push(Action::Send {
                     to: voter,
@@ -490,7 +515,7 @@ impl Node {
         self.votes_received = BTreeSet::from([self.id]);
         self.reset_election_deadline();
         let generation = self.emit_persist_hard(out);
-        if self.votes_received.len() >= self.cluster.quorum() {
+        if self.votes_received.len() >= self.config_state.latest.quorum() {
             self.become_leader(out);
             return;
         }
@@ -499,7 +524,7 @@ impl Node {
             last_log_index: self.log.last_index(),
             last_log_term: self.log.last_term(),
         };
-        let voters: Vec<NodeId> = self.cluster.voters.iter().copied().collect();
+        let voters: Vec<NodeId> = self.config_state.latest.voters.iter().copied().collect();
         for voter in voters {
             if voter != self.id {
                 self.defer_or_emit(
@@ -522,7 +547,8 @@ impl Node {
         self.heartbeat_deadline = self.now.saturating_add(self.config.heartbeat_interval);
         let next = self.log.last_index().next();
         self.progress = self
-            .cluster
+            .config_state
+            .latest
             .members()
             .filter(|&m| m != self.id)
             .map(|m| {
@@ -568,7 +594,8 @@ impl Node {
                 }
             }
             Role::Follower | Role::PreCandidate | Role::Candidate => {
-                if self.now >= self.election_deadline && self.cluster.is_voter(self.id) {
+                if self.now >= self.election_deadline && self.config_state.latest.is_voter(self.id)
+                {
                     self.start_prevote(out);
                 }
             }
@@ -713,7 +740,8 @@ impl Node {
     /// invariant S-06), then propagate applies and the new commit.
     fn advance_commit(&mut self, out: &mut Vec<Action>) {
         let mut held: Vec<u64> = self
-            .cluster
+            .config_state
+            .latest
             .voters
             .iter()
             .map(|&v| {
@@ -725,7 +753,7 @@ impl Node {
             })
             .collect();
         held.sort_unstable();
-        let quorum = self.cluster.quorum();
+        let quorum = self.config_state.latest.quorum();
         let candidate = LogIndex(held[held.len() - quorum]);
         if candidate > self.commit_index && self.log.term_at(candidate) == Some(self.current_term) {
             self.commit_index = candidate;
@@ -845,7 +873,32 @@ impl Node {
                 read_round,
                 out,
             ),
+            Message::InstallSnapshot { .. } => {
+                // Stage A stub: acknowledge with the current base and
+                // buffer nothing. Chunk assembly and install land at
+                // Stage B.
+                out.push(Action::Send {
+                    to: from,
+                    msg: Message::InstallSnapshotResponse {
+                        term: self.current_term,
+                        match_index: self.log.base_index(),
+                    },
+                });
+            }
+            Message::InstallSnapshotResponse { .. } => {}
         }
+    }
+
+    /// Stage A stub for membership changes: every proposal is answered
+    /// `NotLeader` until the Stage B implementation lands. The red
+    /// suites in `tests/property_membership.rs` pin the real behavior.
+    fn on_propose_config(&self, change: ConfigChange, out: &mut Vec<Action>) {
+        out.push(Action::ConfigResponse {
+            change,
+            result: ConfigResult::NotLeader {
+                leader: self.leader_id,
+            },
+        });
     }
 
     fn on_request_vote(
@@ -910,7 +963,7 @@ impl Node {
         }
         if self.role == Role::Candidate && term == self.current_term && vote_granted {
             self.votes_received.insert(from);
-            if self.votes_received.len() >= self.cluster.quorum() {
+            if self.votes_received.len() >= self.config_state.latest.quorum() {
                 self.become_leader(out);
             }
         }
@@ -957,7 +1010,7 @@ impl Node {
         }
         if self.role == Role::PreCandidate && vote_granted {
             self.prevotes_received.insert(from);
-            if self.prevotes_received.len() >= self.cluster.quorum() {
+            if self.prevotes_received.len() >= self.config_state.latest.quorum() {
                 self.start_election(out);
             }
         }

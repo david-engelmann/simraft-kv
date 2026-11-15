@@ -7,7 +7,9 @@
 
 use crate::ids::{ClientId, LogIndex, NodeId, Term, Tick};
 use crate::log::LogEntry;
+use crate::membership::ConfigChange;
 use crate::message::Message;
+use crate::snapshot::SnapshotMeta;
 
 /// Which kind of durable write a `Persisted` event acknowledges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,6 +60,36 @@ pub enum Event {
         seq: u64,
         /// The canonical command payload (simraft-kv encoding).
         payload: Vec<u8>,
+    },
+    /// An operator proposes a single-server membership change
+    /// (docs/ARCHITECTURE.md section 9). The leader answers with
+    /// `Action::ConfigResponse`: immediately when the change is
+    /// rejected, and when the config entry commits when it is
+    /// accepted.
+    ProposeConfig {
+        /// The change being proposed.
+        change: ConfigChange,
+    },
+    /// The driver loaded this node's snapshot payload from its state
+    /// machine, either for the node's own log compaction or because
+    /// the node leads and a follower needs the snapshot relayed. The
+    /// core holds the bytes until every lagging follower has passed
+    /// the snapshot base.
+    SnapshotLoaded {
+        /// The snapshot's identity.
+        meta: SnapshotMeta,
+        /// The complete snapshot payload bytes.
+        data: Vec<u8>,
+    },
+    /// A snapshot the driver was asked to persist (its own, received
+    /// over the wire and assembled, or relayed) is now durable. Only
+    /// on this acknowledgment does the core install the snapshot:
+    /// advance the log base, retain or discard the log per the prefix
+    /// rule, and jump the apply cursor (invariant T-02 applied to
+    /// snapshots).
+    SnapshotPersisted {
+        /// The persisted snapshot's identity.
+        meta: SnapshotMeta,
     },
     /// An RPC message arrived from another node.
     Message {

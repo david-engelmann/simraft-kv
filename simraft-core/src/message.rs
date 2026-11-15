@@ -8,6 +8,7 @@
 
 use crate::ids::{LogIndex, Term};
 use crate::log::LogEntry;
+use crate::membership::ClusterConfig;
 
 /// One RPC message.
 ///
@@ -87,5 +88,32 @@ pub enum Message {
         conflict_term: Term,
         /// The highest read round echoed by the follower (`ReadIndex`, M2).
         read_round: u64,
+    },
+    /// One chunk of a snapshot transfer (docs/ARCHITECTURE.md section
+    /// 7.4). Chunks of one snapshot identity arrive in strictly
+    /// increasing offset order; `done` marks the final chunk.
+    InstallSnapshot {
+        /// The leader's term.
+        term: Term,
+        /// The snapshot's last included index.
+        last_included_index: LogIndex,
+        /// The term of the entry at `last_included_index`.
+        last_included_term: Term,
+        /// The configuration in force at `last_included_index`.
+        config: ClusterConfig,
+        /// The byte offset of `data` within the snapshot payload.
+        offset: u64,
+        /// The chunk bytes.
+        data: Vec<u8>,
+        /// Whether this is the final chunk.
+        done: bool,
+    },
+    /// The follower's answer to an `InstallSnapshot` chunk.
+    InstallSnapshotResponse {
+        /// The follower's current term when it answered.
+        term: Term,
+        /// The snapshot's last included index once installed, or the
+        /// follower's snapshot base index while chunks are in flight.
+        match_index: LogIndex,
     },
 }

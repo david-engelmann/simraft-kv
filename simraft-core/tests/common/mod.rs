@@ -47,9 +47,39 @@ pub struct Harness {
     pub client_responses: Vec<(NodeId, Action)>,
     /// `ReadIndex` outcomes observed, as (answering node, action) pairs.
     pub read_events: Vec<(NodeId, Action)>,
+    /// Membership change outcomes observed, as (answering node,
+    /// action) pairs.
+    pub config_responses: Vec<(NodeId, Action)>,
 }
 
 impl Harness {
+    /// A new cluster over `ids` with an explicit membership (voters
+    /// and learners) shared by every node.
+    pub fn with_cluster(ids: &[u64], cluster: &ClusterConfig, seed: u64) -> Self {
+        let nodes = ids
+            .iter()
+            .map(|&i| {
+                (
+                    NodeId(i),
+                    Node::new(
+                        NodeId(i),
+                        Config::default(),
+                        cluster.clone(),
+                        seed ^ i.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                    )
+                    .expect("default config validates"),
+                )
+            })
+            .collect();
+        Self {
+            applies: ids.iter().map(|&i| (NodeId(i), Vec::new())).collect(),
+            nodes,
+            client_responses: Vec::new(),
+            read_events: Vec::new(),
+            config_responses: Vec::new(),
+        }
+    }
+
     /// A new cluster over `ids`.
     pub fn new(ids: &[u64], seed: u64) -> Self {
         Self {
@@ -57,6 +87,7 @@ impl Harness {
             nodes: build_nodes(ids, seed),
             client_responses: Vec::new(),
             read_events: Vec::new(),
+            config_responses: Vec::new(),
         }
     }
 
@@ -116,7 +147,13 @@ impl Harness {
             Action::ReadReady { .. } | Action::ReadRejected { .. } => {
                 self.read_events.push((source, action));
             }
-            Action::StepDown { .. } => {}
+            Action::ConfigResponse { .. } => {
+                self.config_responses.push((source, action));
+            }
+            Action::PersistSnapshot { meta, .. } => {
+                queue.push_back((source, Event::SnapshotPersisted { meta }));
+            }
+            Action::LoadSnapshot { .. } | Action::StepDown { .. } => {}
         }
     }
 

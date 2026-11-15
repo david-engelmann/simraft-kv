@@ -15,6 +15,7 @@
 pub mod command;
 pub mod error;
 pub mod machine;
+pub mod snapshot;
 
 /// The version of the canonical command and snapshot payload schema
 /// implemented by this crate (docs/ARCHITECTURE.md section 7).
@@ -25,3 +26,4 @@ pub use command::{
 };
 pub use error::KvError;
 pub use machine::{ApplyOutcome, KvStateMachine};
+pub use snapshot::{SnapshotParts, decode_snapshot, encode_snapshot};

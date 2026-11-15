@@ -131,6 +131,36 @@ impl Log {
         first
     }
 
+    /// The term of the snapshot base entry (term 0 at the sentinel).
+    #[must_use]
+    pub const fn base_term(&self) -> Term {
+        self.base_term
+    }
+
+    /// Advance the snapshot base to (`index`, `term`), discarding every
+    /// entry at or below `index`. The caller (snapshot install, M3)
+    /// guarantees `term` is the term of the entry at `index` and that
+    /// `index` does not pass the node's commit boundary (invariant
+    /// N-05). Advancing to or below the current base is a no-op.
+    pub fn advance_base(&mut self, index: LogIndex, term: Term) {
+        if index <= self.base_index {
+            return;
+        }
+        let drop = usize::try_from(index.0 - self.base_index.0)
+            .unwrap_or(usize::MAX)
+            .min(self.entries.len());
+        self.entries.drain(..drop);
+        self.base_index = index;
+        self.base_term = term;
+    }
+
+    /// Discard the entire entry vector, keeping the snapshot base. Used
+    /// by snapshot install when the follower's log holds no entry
+    /// matching the snapshot's last included entry (invariant N-04).
+    pub fn clear_entries(&mut self) {
+        self.entries.clear();
+    }
+
     /// Delete every entry at or after `index`. Deleting at or below the
     /// base index is a no-op: compacted history is never resurrected.
     pub fn truncate_from(&mut self, index: LogIndex) {

@@ -4,9 +4,12 @@
 //! sends go to the network, persists go to storage, applies go to the
 //! state machine. The core itself performs no I/O.
 
+use crate::error::ProtocolError;
 use crate::ids::{ClientId, LogIndex, NodeId, Term};
 use crate::log::LogEntry;
+use crate::membership::ConfigChange;
 use crate::message::Message;
+use crate::snapshot::SnapshotMeta;
 
 /// The outcome of a client proposal, delivered when the entry that
 /// carries it commits and applies (or immediately, when this node cannot
@@ -20,6 +23,27 @@ pub enum ClientResult {
     NotLeader {
         /// The known leader, if any.
         leader: Option<NodeId>,
+    },
+}
+
+/// The outcome of a membership change proposal, delivered
+/// immediately when the change is rejected or this node is not the
+/// leader, and when the config entry commits when it is accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigResult {
+    /// The config entry committed; the new configuration is in force.
+    Committed,
+    /// This node is not the leader. `leader` is its current hint for
+    /// the leader's identity, when it has one.
+    NotLeader {
+        /// The known leader, if any.
+        leader: Option<NodeId>,
+    },
+    /// The change broke a membership rule; the error names the values
+    /// that decided the rejection.
+    Rejected {
+        /// The rule the change broke.
+        error: ProtocolError,
     },
 }
 
@@ -86,6 +110,31 @@ pub enum Action {
         seq: u64,
         /// The outcome.
         result: ClientResult,
+    },
+    /// Persist a fully assembled snapshot payload (received over the
+    /// wire, or this node's own once loaded) before the core installs
+    /// it. The matching `Event::SnapshotPersisted` releases the
+    /// install.
+    PersistSnapshot {
+        /// The snapshot's identity.
+        meta: SnapshotMeta,
+        /// The complete snapshot payload bytes.
+        data: Vec<u8>,
+    },
+    /// The core needs this node's snapshot payload (its log base has
+    /// advanced past entries a follower still needs, or the driver
+    /// asked for compaction headroom). The driver answers with
+    /// `Event::SnapshotLoaded`.
+    LoadSnapshot {
+        /// The identity of the snapshot to load.
+        meta: SnapshotMeta,
+    },
+    /// Answer a membership change proposal.
+    ConfigResponse {
+        /// The change that was proposed.
+        change: ConfigChange,
+        /// The outcome.
+        result: ConfigResult,
     },
     /// This node was a leader and stepped down on discovering a higher
     /// term. Drivers use it to fail in-flight leader work promptly.

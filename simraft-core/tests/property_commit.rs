@@ -85,7 +85,10 @@ impl Filtered {
                     Action::ClientResponse { .. }
                     | Action::StepDown { .. }
                     | Action::ReadReady { .. }
-                    | Action::ReadRejected { .. } => {}
+                    | Action::ReadRejected { .. }
+                    | Action::ConfigResponse { .. }
+                    | Action::PersistSnapshot { .. }
+                    | Action::LoadSnapshot { .. } => {}
                 }
             }
         }
