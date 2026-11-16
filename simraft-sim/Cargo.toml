@@ -12,6 +12,10 @@ categories = ["algorithms", "development-tools::testing"]
 [dependencies]
 simraft-core = { path = "../simraft-core" }
 simraft-kv = { path = "../simraft-kv" }
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+serde_json = "1"
+sha2 = "0.10"
 
 [lints]
 workspace = true
