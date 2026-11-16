@@ -156,14 +156,24 @@ fn election_safety(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
     Ok(())
 }
 
-/// S-02: a leader never overwrites or deletes its own entries;
-/// its log changes only by tail appends and base advancement.
+/// S-02: within one leadership tenure, a leader never overwrites
+/// or deletes its own entries; its log changes only by tail
+/// appends and base advancement. Entries from an earlier tenure
+/// carry no guarantee: as a follower the node may have them
+/// overwritten by the current leader.
 fn leader_append_only(
     views: &[NodeView<'_>],
     previous: &mut BTreeMap<NodeId, (LogIndex, Term, Vec<LogEntry>)>,
 ) -> Result<(), OracleViolation> {
     for view in views {
         if view.role != Role::Leader {
+            // Append-only binds within one leadership tenure. Once
+            // the node serves as a follower, the current leader may
+            // legitimately overwrite its uncommitted tail or
+            // replace its log through a snapshot, so the remembered
+            // tenure snapshot is dropped here and a later tenure
+            // starts fresh.
+            previous.remove(&view.id);
             continue;
         }
         if let Some((prev_base, _prev_term, prev_entries)) = previous.get(&view.id) {

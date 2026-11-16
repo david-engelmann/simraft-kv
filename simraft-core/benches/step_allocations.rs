@@ -7,7 +7,7 @@
 //! allocates within a measured per-event-class budget, verified
 //! with a counting allocator in this bench harness. Tick, vote,
 //! and response handling allocate at most a small constant number
-//! of allocations; AppendEntries handling may allocate in
+//! of allocations; `AppendEntries` handling may allocate in
 //! proportion to the batch it accepts. The budgets below are the
 //! recorded bounds; a regression fails CI's bench smoke run
 //! (`cargo bench --workspace -- --test` executes the same
