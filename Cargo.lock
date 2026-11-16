@@ -849,6 +849,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "simraft-node"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "simraft-core",
+ "simraft-kv",
+]
+
+[[package]]
 name = "simraft-sim"
 version = "0.1.0"
 dependencies = [
