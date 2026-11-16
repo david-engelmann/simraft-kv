@@ -148,6 +148,23 @@ Propose carries the canonical command payload bytes produced by
 simraft-kv rather than a KV operation type: the core is KV-agnostic, and
 the client identity travels alongside the payload for deduplication.
 
+As built at M3: ProposeConfig, SnapshotPersisted, and the
+InstallSnapshot messages are live, and three variants join the
+catalog as as-built additions. Event::SnapshotLoaded delivers
+snapshot bytes the driver loaded (this node's own snapshot, for
+compaction and for relay to lagging peers), Action::LoadSnapshot
+asks the driver to load the bytes for the node's current snapshot
+base, and Action::ConfigResponse answers a ProposeConfig with a
+ConfigResult (Committed, NotLeader, or Rejected with the
+ProtocolError). A received snapshot installs only when its persist
+is acknowledged through Event::SnapshotPersisted, the same
+persist-before-effect shape as log entries. The node's
+configuration state is derived from the log by a single recompute
+pass after every log or commit mutation: the newest config entry in
+the log is the latest configuration, the newest at or below the
+commit index is the committed one, and the snapshot base
+configuration rules when no config entry survives above the base.
+
 Tick is a u64 count of virtual milliseconds supplied by the driver. The core
 compares Tick values only against deadlines it computed from its own config
 and its deterministic per-node timer offsets. It never converts Tick to a

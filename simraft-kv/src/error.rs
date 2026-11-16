@@ -47,6 +47,22 @@ pub enum KvError {
         /// The index it was offered.
         received: LogIndex,
     },
+    /// A snapshot's trailing SHA-256 digest does not match its
+    /// payload. The snapshot is rejected whole and never installed
+    /// (invariant N-03).
+    SnapshotDigest {
+        /// The digest stored in the snapshot (hex).
+        expected: String,
+        /// The digest computed over the received payload (hex).
+        actual: String,
+    },
+    /// A snapshot payload did not start with the "SRSN" magic.
+    BadSnapshotMagic {
+        /// The first four bytes found, lossy-decoded.
+        found: String,
+    },
+    /// A snapshot payload carried a configuration with no voters.
+    SnapshotEmptyVoters,
 }
 
 impl fmt::Display for KvError {
@@ -81,6 +97,20 @@ impl fmt::Display for KvError {
                 f,
                 "apply order violation: expected {expected}, received {received}"
             ),
+            Self::SnapshotDigest { expected, actual } => write!(
+                f,
+                "snapshot digest mismatch: stored {expected}, computed {actual}; \
+                 the snapshot is rejected whole"
+            ),
+            Self::BadSnapshotMagic { found } => {
+                write!(
+                    f,
+                    "snapshot payload starts with {found:?}, expected \"SRSN\""
+                )
+            }
+            Self::SnapshotEmptyVoters => {
+                write!(f, "snapshot configuration has no voters")
+            }
         }
     }
 }

@@ -157,20 +157,25 @@ pub fn decode_result(payload: &[u8]) -> Result<CommandResult, KvError> {
     }
 }
 
-fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
+pub(crate) fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     let len = u32::try_from(bytes.len()).expect("payload fields fit in u32 by construction");
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
 }
 
 /// A cursor over a payload, producing offset-exact truncation errors.
-struct Reader<'a> {
+pub(crate) struct Reader<'a> {
     buf: &'a [u8],
     pos: usize,
 }
 
-impl Reader<'_> {
-    fn take(&mut self, n: usize, field: &'static str) -> Result<&[u8], KvError> {
+impl<'a> Reader<'a> {
+    /// A cursor at the start of `buf`.
+    pub(crate) const fn new(buf: &'a [u8]) -> Self {
+        Self { buf, pos: 0 }
+    }
+
+    pub(crate) fn take(&mut self, n: usize, field: &'static str) -> Result<&[u8], KvError> {
         let available = self.buf.len().saturating_sub(self.pos);
         if available < n {
             return Err(KvError::Truncated {
@@ -185,25 +190,41 @@ impl Reader<'_> {
         Ok(slice)
     }
 
-    fn u8(&mut self, field: &'static str) -> Result<u8, KvError> {
+    pub(crate) fn u8(&mut self, field: &'static str) -> Result<u8, KvError> {
         Ok(self.take(1, field)?[0])
     }
 
-    fn u32(&mut self, field: &'static str) -> Result<u32, KvError> {
+    pub(crate) fn u16(&mut self, field: &'static str) -> Result<u16, KvError> {
+        let bytes = self.take(2, field)?;
+        Ok(u16::from_le_bytes(
+            bytes.try_into().expect("take returns exactly 2 bytes"),
+        ))
+    }
+
+    pub(crate) fn u32(&mut self, field: &'static str) -> Result<u32, KvError> {
         let bytes = self.take(4, field)?;
         Ok(u32::from_le_bytes(
             bytes.try_into().expect("take returns exactly 4 bytes"),
         ))
     }
 
-    fn u64(&mut self, field: &'static str) -> Result<u64, KvError> {
+    pub(crate) fn u64(&mut self, field: &'static str) -> Result<u64, KvError> {
         let bytes = self.take(8, field)?;
         Ok(u64::from_le_bytes(
             bytes.try_into().expect("take returns exactly 8 bytes"),
         ))
     }
 
-    fn bytes(&mut self, field: &'static str) -> Result<Vec<u8>, KvError> {
+    /// The unconsumed remainder of the buffer.
+    #[allow(
+        clippy::missing_const_for_fn,
+        reason = "slice indexing is not const; the cursor API stays uniform"
+    )]
+    pub(crate) fn rest(&self) -> &[u8] {
+        &self.buf[self.pos..]
+    }
+
+    pub(crate) fn bytes(&mut self, field: &'static str) -> Result<Vec<u8>, KvError> {
         let len = self.u32(field)? as usize;
         Ok(self.take(len, field)?.to_vec())
     }

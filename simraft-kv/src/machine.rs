@@ -13,7 +13,8 @@
 
 use crate::command::{CommandResult, KvOp, decode_command};
 use crate::error::KvError;
-use simraft_core::{ClientId, EntryKind, LogEntry, LogIndex};
+use crate::snapshot::SnapshotParts;
+use simraft_core::{ClientId, ClusterConfig, EntryKind, LogEntry, LogIndex, Term};
 use std::collections::BTreeMap;
 
 /// `CommandResult::Error` code for a rejected sequence gap.
@@ -139,6 +140,57 @@ impl KvStateMachine {
             EntryKind::Command { payload, .. } => self.apply_command(index, payload),
         };
         Ok(outcome)
+    }
+
+    /// Capture this machine's state as snapshot parts at
+    /// (`index`, `term`) under `config`: the store and the session
+    /// table, in the canonical order the snapshot codec writes.
+    #[must_use]
+    pub fn snapshot_parts(
+        &self,
+        index: LogIndex,
+        term: Term,
+        config: &ClusterConfig,
+    ) -> SnapshotParts {
+        SnapshotParts {
+            last_included_index: index,
+            last_included_term: term,
+            config: config.clone(),
+            store: self
+                .store
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect(),
+            sessions: self
+                .sessions
+                .iter()
+                .map(|(client, session)| (*client, session.last_seq, session.response.clone()))
+                .collect(),
+        }
+    }
+
+    /// Replace this machine's state with a decoded snapshot's parts
+    /// (invariant N-03): the store and session table become the
+    /// snapshot's, and the apply cursor jumps to the snapshot's last
+    /// included index, so deduplication continues exactly as the
+    /// snapshotted node would have run it.
+    pub fn install_snapshot(&mut self, parts: SnapshotParts) {
+        self.store = parts.store.into_iter().collect();
+        self.sessions = parts
+            .sessions
+            .into_iter()
+            .map(|(client, last_seq, response)| {
+                (
+                    client,
+                    SessionEntry {
+                        last_seq,
+                        response,
+                        applied_index: parts.last_included_index,
+                    },
+                )
+            })
+            .collect();
+        self.last_applied = parts.last_included_index;
     }
 
     /// Execute one command payload under the session rules of
