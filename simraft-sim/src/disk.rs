@@ -109,6 +109,27 @@ fn record_span(log: &[u8], index: LogIndex) -> Option<(usize, usize)> {
     None
 }
 
+/// The byte offset just past each complete record in `log`,
+/// walking record lengths without verifying checksums. The
+/// walk stops at the first record whose length field is
+/// unusable or runs past the end.
+fn record_ends(log: &[u8]) -> Vec<usize> {
+    let mut ends = Vec::new();
+    let mut offset = 0usize;
+    while offset + HEADER_LEN <= log.len() {
+        let Some(len_bytes) = log[offset + 6..offset + 10].try_into().ok() else {
+            break;
+        };
+        let record_len = u32::from_le_bytes(len_bytes) as usize;
+        if record_len < HEADER_LEN + CRC_LEN || offset + record_len > log.len() {
+            break;
+        }
+        offset += record_len;
+        ends.push(offset);
+    }
+    ends
+}
+
 impl SimDisk {
     /// A blank disk: nothing durable, nothing buffered.
     #[must_use]
@@ -143,12 +164,51 @@ impl SimDisk {
         }
     }
 
-    /// Make the buffered log durable through its current tail:
-    /// the volatile entries are encoded as section 7.3 records
-    /// and replace the durable log bytes.
+    /// Make the buffered log durable through its current tail.
+    ///
+    /// An fsync makes new writes durable; it does not rewrite
+    /// bytes already on the disk. The durable records the
+    /// volatile log still agrees with are kept byte for byte,
+    /// so a corruption in an already durable record survives an
+    /// fsync of later appends, exactly as on real media.
+    /// Encoding resumes at the first position where the
+    /// volatile log diverges from the durable records (a
+    /// rewritten suffix), or at the first record the restore
+    /// cannot read when the volatile log has since been
+    /// truncated back past it.
     pub fn fsync_entries(&mut self) {
-        let mut bytes = Vec::new();
-        for (position, entry) in self.volatile_entries.iter().enumerate() {
+        let restore = self.restore_log();
+        let ends = record_ends(&self.durable_log);
+        // Length of the agreeing prefix between the restored
+        // durable entries and the volatile log.
+        let mut keep = 0usize;
+        while keep < restore.entries.len()
+            && keep < self.volatile_entries.len()
+            && restore.entries[keep] == self.volatile_entries[keep]
+        {
+            keep += 1;
+        }
+        if restore.torn.is_some() && keep == restore.entries.len() {
+            if self.volatile_entries.len() > ends.len() {
+                // Pure appends past a torn record: the torn
+                // record and everything durable after it stay
+                // exactly as they are on the disk.
+                keep = ends.len();
+            } else if self.volatile_entries.len() > restore.entries.len() {
+                // The volatile log was rewritten from the torn
+                // position onward; the torn record is replaced.
+                keep = restore.entries.len();
+            } else {
+                keep = self.volatile_entries.len();
+            }
+        }
+        let mut bytes = if keep == 0 {
+            Vec::new()
+        } else {
+            let cut = ends.get(keep - 1).copied().unwrap_or(0);
+            self.durable_log[..cut].to_vec()
+        };
+        for (position, entry) in self.volatile_entries.iter().enumerate().skip(keep) {
             let index = LogIndex(u64::try_from(position + 1).unwrap_or(u64::MAX));
             bytes.extend_from_slice(&encode_log_record(index, entry));
         }
@@ -364,6 +424,33 @@ mod tests {
         assert_eq!(torn.index, LogIndex(3));
         assert_ne!(torn.expected_crc, torn.actual_crc);
         assert!(!disk.corrupt_log_record(LogIndex(99)));
+    }
+
+    #[test]
+    fn an_fsync_of_later_appends_preserves_a_corrupt_record() {
+        let mut disk = SimDisk::new();
+        disk.write_entries(LogIndex(1), &[entry(1), entry(1), entry(1), entry(1)]);
+        disk.fsync_entries();
+        assert!(disk.corrupt_log_record(LogIndex(3)));
+        disk.write_entries(LogIndex(5), &[entry(2), entry(2)]);
+        disk.fsync_entries();
+        let restore = disk.restore_log();
+        assert_eq!(restore.entries.len(), 2);
+        let torn = restore.torn.expect("the corruption survives the fsync");
+        assert_eq!(torn.index, LogIndex(3));
+    }
+
+    #[test]
+    fn an_fsync_rewrites_from_the_first_divergence() {
+        let mut disk = SimDisk::new();
+        disk.write_entries(LogIndex(1), &[entry(1), entry(1), entry(1), entry(1)]);
+        disk.fsync_entries();
+        disk.write_entries(LogIndex(3), &[entry(2), entry(2)]);
+        disk.fsync_entries();
+        let restore = disk.restore_log();
+        assert!(restore.torn.is_none());
+        let terms: Vec<Term> = restore.entries.iter().map(|e| e.term).collect();
+        assert_eq!(terms, vec![Term(1), Term(1), Term(2), Term(2)]);
     }
 
     #[test]
