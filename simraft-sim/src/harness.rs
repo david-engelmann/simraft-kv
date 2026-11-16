@@ -634,15 +634,20 @@ impl<'a> Driver<'a> {
                     sim.disk.durable_snapshot().cloned()
                 };
                 if let Some((meta, data)) = snapshot {
-                    // This fsync completes a received snapshot's
-                    // persist (the core's PersistSnapshot action is
-                    // emitted only for installs from a peer). The
+                    // This fsync completes a snapshot persist:
+                    // a received install (the core's
+                    // PersistSnapshot action) or the node's own
+                    // compaction (queued by maybe_compact). The
                     // payload enters the state machine here, paired
                     // with the cursor jump the core makes on
-                    // SnapshotPersisted: without the install the
-                    // machine would silently miss the snapshotted
-                    // state while the core applies past it
-                    // (post-M4 Lane 2, invariant H-08).
+                    // SnapshotPersisted: for a received snapshot
+                    // the install is what the machine holds at
+                    // all, and without it the machine would
+                    // silently miss the snapshotted state while
+                    // the core applies past it; for the node's own
+                    // snapshot the install restores exactly the
+                    // state the machine already holds (post-M4
+                    // Lane 2, invariant H-08).
                     if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
                         if let Some(sim) = self.nodes.get_mut(&id) {
                             sim.machine.install_snapshot(parts);
@@ -1031,7 +1036,31 @@ impl<'a> Driver<'a> {
             }
         };
         if let Some((meta, data)) = plan {
+            // The core advances the base on SnapshotPersisted,
+            // and it emits no PersistSnapshot action for a node's
+            // own snapshot (that action is reserved for received
+            // installs), so the driver completes the persist
+            // cycle itself: load the bytes into the core, write
+            // them to the disk's volatile snapshot, and queue the
+            // fsync that steps SnapshotPersisted. Without this
+            // the base never advances and no follower ever falls
+            // behind it, which silently disarms the whole
+            // InstallSnapshot relay in the simulator (post-M4
+            // Lane 2, invariant H-08).
+            let epoch = {
+                let sim = self.nodes.get_mut(&id).expect("compact targets a node");
+                sim.disk.write_snapshot(meta.clone(), data.clone());
+                sim.epoch
+            };
             self.step_node(id, Event::SnapshotLoaded { meta, data });
+            self.queue.push(
+                self.now + FSYNC_DELAY,
+                SimEvent::Fsync {
+                    node: id,
+                    epoch,
+                    kind: FsyncKind::Snapshot,
+                },
+            );
         }
     }
 

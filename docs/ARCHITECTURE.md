@@ -685,6 +685,14 @@ that matters: a node that answered as if it had persisted, then lost the
 write. The core's persist-before-response rule (INVARIANT T-02) is the
 defense, and the crash-during-append seeds are its test.
 
+The driver compacts a node's log once its commit index runs sixteen
+entries past its snapshot base: it builds the snapshot from the state
+machine, loads it into the core, writes it to the disk, and completes
+the persist cycle with the fsync that steps Event::SnapshotPersisted,
+which is what advances the base. A follower whose next index falls to
+or below a leader's advanced base is then caught up by InstallSnapshot
+for real, not merely in the core's unit tests.
+
 The durable log is stored as section 7.3 log records (the same byte
 format the simraft-node file store writes), not as structured entries.
 Restoring decodes the records in index order and stops at the first bad
