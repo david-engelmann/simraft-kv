@@ -7,7 +7,7 @@
 //! replication throughput in entries per second and step latency
 //! per event class, measured with criterion over a three-node
 //! cluster driven directly (no network model). Inputs and outputs
-//! are wrapped in black_box and throughput is configured per
+//! are wrapped in `black_box` and throughput is configured per
 //! group. Numbers land in the README only from a recorded run of
 //! this benchmark, never estimated.
 
@@ -81,7 +81,7 @@ fn elect(nodes: &mut BTreeMap<NodeId, Node>, id: NodeId) {
 /// persists immediately, until the cluster is quiescent.
 fn route(nodes: &mut BTreeMap<NodeId, Node>, from: NodeId, actions: Vec<Action>) {
     let mut queue: Vec<(NodeId, Event)> = Vec::new();
-    let mut collect = |queue: &mut Vec<(NodeId, Event)>, source: NodeId, actions: Vec<Action>| {
+    let collect = |queue: &mut Vec<(NodeId, Event)>, source: NodeId, actions: Vec<Action>| {
         for action in actions {
             match action {
                 Action::Send { to, msg } => {
@@ -124,27 +124,30 @@ fn route(nodes: &mut BTreeMap<NodeId, Node>, from: NodeId, actions: Vec<Action>)
 }
 
 fn bench_replication(c: &mut Criterion) {
-    let mut group = c.benchmark_group("replication");
-    group.throughput(Throughput::Elements(1));
-    group.bench_function("propose_commit_round", |b| {
-        let mut nodes = cluster();
-        elect(&mut nodes, NodeId(1));
-        let mut seq = 0_u64;
-        b.iter(|| {
-            seq += 1;
-            let actions = nodes
-                .get_mut(&NodeId(1))
-                .expect("leader exists")
-                .step(Event::Propose {
-                    client_id: ClientId(1),
-                    seq,
-                    payload: black_box(vec![1_u8; 32]),
-                });
-            route(&mut nodes, NodeId(1), actions);
-            black_box(nodes.get(&NodeId(1)).expect("leader").commit_index())
+    {
+        let mut group = c.benchmark_group("replication");
+        group.throughput(Throughput::Elements(1));
+        group.bench_function("propose_commit_round", |b| {
+            let mut nodes = cluster();
+            elect(&mut nodes, NodeId(1));
+            let mut seq = 0_u64;
+            b.iter(|| {
+                seq += 1;
+                let actions =
+                    nodes
+                        .get_mut(&NodeId(1))
+                        .expect("leader exists")
+                        .step(Event::Propose {
+                            client_id: ClientId(1),
+                            seq,
+                            payload: black_box(vec![1_u8; 32]),
+                        });
+                route(&mut nodes, NodeId(1), actions);
+                black_box(nodes.get(&NodeId(1)).expect("leader").commit_index())
+            });
         });
-    });
-    group.finish();
+        group.finish();
+    }
 
     let mut group = c.benchmark_group("step_latency");
     group.bench_function("follower_append_entries", |b| {
