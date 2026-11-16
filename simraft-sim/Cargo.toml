@@ -14,6 +14,7 @@ simraft-core = { path = "../simraft-core" }
 simraft-kv = { path = "../simraft-kv" }
 simraft-wire = { path = "../simraft-wire" }
 clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
 sha2 = "0.10"
 
 [dev-dependencies]

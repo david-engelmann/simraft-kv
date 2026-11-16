@@ -42,6 +42,11 @@ pub struct SimConfig {
     pub seed: u64,
     /// The number of nodes (all voters at genesis).
     pub node_count: usize,
+    /// Extra nodes that join the genesis configuration as
+    /// learners (post-M4 Lane 2): they run, replicate, and apply
+    /// from tick zero but never vote or campaign until a config
+    /// change promotes them.
+    pub learners: Vec<NodeId>,
     /// The core protocol configuration for every node.
     pub core: Config,
     /// The length of the chaos phase, in ticks.
@@ -65,6 +70,7 @@ impl Default for SimConfig {
         Self {
             seed: 0,
             node_count: 3,
+            learners: Vec::new(),
             core: Config::default(),
             chaos_ticks: 4_000,
             heal_ticks: 4_000,
@@ -105,6 +111,10 @@ pub struct RunReport {
     pub oracle_failure: Option<OracleViolation>,
     /// The recorded client history.
     pub history: History,
+    /// Every node's last applied index at the end of the run, in
+    /// node order (learners included): the catch-up evidence a
+    /// scenario asserts against the final commit index.
+    pub final_applied: Vec<(NodeId, LogIndex)>,
     /// The largest Propose-to-Apply latency over completed client
     /// writes, in virtual ticks (invariant L-02's measurement).
     pub max_commit_latency_ticks: u64,
@@ -266,10 +276,10 @@ struct Driver<'a> {
 impl<'a> Driver<'a> {
     fn new(config: &'a SimConfig) -> Self {
         let ids: Vec<NodeId> = (1..=config.node_count as u64).map(NodeId).collect();
-        let genesis = ClusterConfig::new(ids.clone(), Vec::new())
+        let genesis = ClusterConfig::new(ids.clone(), config.learners.clone())
             .expect("the genesis config of a run always validates");
         let mut nodes = BTreeMap::new();
-        for id in ids {
+        for id in ids.iter().copied().chain(config.learners.iter().copied()) {
             let node = Node::new(id, config.core.clone(), genesis.clone(), config.seed ^ id.0)
                 .expect("the run's core config always validates");
             nodes.insert(
@@ -426,6 +436,26 @@ impl<'a> Driver<'a> {
                     if let Some((leader, _)) = self.current_leader {
                         self.step_node(leader, Event::ProposeConfig { change });
                     }
+                }
+                ScriptedOp::CorruptLog { node, index } => {
+                    let flipped = self
+                        .nodes
+                        .get_mut(&node)
+                        .is_some_and(|sim| sim.disk.corrupt_log_record(index));
+                    self.trace.push(
+                        self.now,
+                        &format!("corrupt_log {node} {index} flipped={flipped}"),
+                    );
+                }
+                ScriptedOp::CorruptSnapshot { node } => {
+                    let flipped = self
+                        .nodes
+                        .get_mut(&node)
+                        .is_some_and(|sim| sim.disk.corrupt_snapshot());
+                    self.trace.push(
+                        self.now,
+                        &format!("corrupt_snapshot {node} flipped={flipped}"),
+                    );
                 }
                 ScriptedOp::RemoveLeader => {
                     if let Some((leader, _)) = self.current_leader {
@@ -1196,6 +1226,11 @@ impl<'a> Driver<'a> {
             verdict,
             oracle_failure,
             history: std::mem::take(&mut self.history),
+            final_applied: self
+                .nodes
+                .iter()
+                .map(|(id, sim)| (*id, sim.node.last_applied()))
+                .collect(),
             max_commit_latency_ticks: self.max_latency,
             trace: std::mem::take(&mut self.trace),
         }
