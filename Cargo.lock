@@ -849,15 +849,34 @@ dependencies = [
 ]
 
 [[package]]
-name = "simraft-sim"
+name = "simraft-node"
 version = "0.1.0"
 dependencies = [
  "clap",
  "crc32fast",
+ "simraft-core",
+ "simraft-kv",
+ "simraft-wire",
+]
+
+[[package]]
+name = "simraft-sim"
+version = "0.1.0"
+dependencies = [
+ "clap",
  "criterion",
  "sha2",
  "simraft-core",
  "simraft-kv",
+ "simraft-wire",
+]
+
+[[package]]
+name = "simraft-wire"
+version = "0.1.0"
+dependencies = [
+ "crc32fast",
+ "simraft-core",
 ]
 
 [[package]]

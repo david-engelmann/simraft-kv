@@ -1,17 +1,25 @@
-//! The section 7.1 message frame codec.
+//! simraft-wire: the section 7.1 message frame codec, shared by
+//! the simulator and the real I/O adapter.
 //!
-//! The simulator's packets carry real frame bytes, so the
-//! simulation tests the wire format and not structured shortcuts
-//! (docs/ARCHITECTURE.md section 12.2). Layout: magic "SRKV",
-//! version `u16`, kind `u8`, flags `u8`, term `u64`, from `u64`,
-//! to `u64`, `body_len` `u32`, body, and a CRC-32 IEEE over every
-//! preceding byte with the domain prefix "SRKV/frame/v1"
-//! prepended to the CRC input only.
+//! One codec serves both carriers of the format: the simulator's
+//! packets carry real frame bytes, so the simulation tests the
+//! wire format and not structured shortcuts
+//! (docs/ARCHITECTURE.md section 12.2), and simraft-node's TCP
+//! transport carries the same bytes between real processes.
+//! Layout: magic "SRKV", version `u16`, kind `u8`, flags `u8`,
+//! term `u64`, from `u64`, to `u64`, `body_len` `u32`, body, and
+//! a CRC-32 IEEE over every preceding byte with the domain
+//! prefix "SRKV/frame/v1" prepended to the CRC input only.
 //!
 //! Log entries inside `AppendEntries` bodies use the section 7.2
 //! entry encoding; a Command entry's payload is the canonical
 //! simraft-kv command encoding, carried with its length so the
 //! frame stays faithful to the core's opaque-payload boundary.
+//!
+//! This crate forbids unsafe code.
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
 
 use std::fmt;
 
@@ -186,6 +194,57 @@ fn encode_entry(out: &mut Vec<u8>, entry: &LogEntry) {
             encode_config(out, config);
         }
     }
+}
+
+/// Encode one log entry in the section 7.2 entry encoding, for
+/// carriers outside frames (the section 7.3 durable log record).
+#[must_use]
+pub fn encode_entry_bytes(entry: &LogEntry) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_entry(&mut out, entry);
+    out
+}
+
+/// Decode one log entry from exactly its section 7.2 encoding.
+///
+/// # Errors
+/// Returns a `WireError` naming the failure when the bytes are
+/// truncated, malformed, or have trailing content.
+pub fn decode_entry_bytes(bytes: &[u8]) -> Result<LogEntry, WireError> {
+    let mut reader = Reader::new(bytes);
+    let entry = decode_entry(&mut reader)?;
+    if reader.pos != bytes.len() {
+        return Err(WireError::Trailing {
+            extra: bytes.len() - reader.pos,
+        });
+    }
+    Ok(entry)
+}
+
+/// Encode a cluster configuration in the section 7.2 config
+/// encoding, for carriers outside frames (snapshot records).
+#[must_use]
+pub fn encode_config_bytes(config: &ClusterConfig) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_config(&mut out, config);
+    out
+}
+
+/// Decode a cluster configuration from exactly its section 7.2
+/// encoding.
+///
+/// # Errors
+/// Returns a `WireError` naming the failure when the bytes are
+/// truncated, malformed, or have trailing content.
+pub fn decode_config_bytes(bytes: &[u8]) -> Result<ClusterConfig, WireError> {
+    let mut reader = Reader::new(bytes);
+    let config = decode_config(&mut reader)?;
+    if reader.pos != bytes.len() {
+        return Err(WireError::Trailing {
+            extra: bytes.len() - reader.pos,
+        });
+    }
+    Ok(config)
 }
 
 fn encode_body(msg: &Message) -> Vec<u8> {
@@ -374,6 +433,22 @@ fn decode_entry(r: &mut Reader<'_>) -> Result<LogEntry, WireError> {
     Ok(LogEntry { term, kind })
 }
 
+/// The total length in bytes of the frame whose header begins
+/// `bytes`, for stream readers that must know how much to read
+/// before decoding.
+///
+/// Returns `None` when fewer than a full header's bytes are
+/// available or the magic is wrong; the caller validates
+/// everything else through `decode_frame`.
+#[must_use]
+pub fn frame_len(bytes: &[u8]) -> Option<usize> {
+    if bytes.len() < HEADER_LEN || &bytes[0..4] != MAGIC {
+        return None;
+    }
+    let body_len = u32::from_le_bytes(bytes[32..36].try_into().ok()?) as usize;
+    Some(HEADER_LEN + body_len + 4)
+}
+
 /// Decode a complete frame into (from, to, message).
 ///
 /// # Errors
@@ -517,6 +592,25 @@ fn decode_body(kind: u8, term: Term, body: &[u8]) -> Result<Message, WireError> 
 mod tests {
     use super::*;
     use simraft_core::ClusterConfig;
+
+    #[test]
+    fn frame_len_reads_the_header() {
+        let msg = Message::RequestVote {
+            term: Term(2),
+            last_log_index: LogIndex(9),
+            last_log_term: Term(1),
+        };
+        let frame = encode_frame(NodeId(1), NodeId(2), &msg);
+        assert_eq!(frame_len(&frame), Some(frame.len()));
+        assert_eq!(
+            frame_len(&frame[..10]),
+            None,
+            "a partial header has no length"
+        );
+        let mut bad = frame;
+        bad[0] = b'X';
+        assert_eq!(frame_len(&bad), None, "a wrong magic has no length");
+    }
 
     #[test]
     fn every_message_kind_round_trips() {
