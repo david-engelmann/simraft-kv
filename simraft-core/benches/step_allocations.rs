@@ -133,10 +133,19 @@ fn bench_step_allocations(c: &mut Criterion) {
     });
     group.bench_function("append_entries_one", |b| {
         let mut leader = leader();
-        let actions = leader.step(Event::Propose {
+        // The proposal's sends are released only once the entry is
+        // persisted (persist-before-response), so acknowledge the
+        // persist first and take the AppendEntries from the
+        // released actions.
+        leader.step(Event::Propose {
             client_id: simraft_core::ClientId(1),
             seq: 1,
             payload: vec![3_u8; 16],
+        });
+        let last = leader.log().last_index();
+        let actions = leader.step(Event::Persisted {
+            kind: PersistKind::Entries,
+            up_to_index: last,
         });
         let message = actions
             .iter()

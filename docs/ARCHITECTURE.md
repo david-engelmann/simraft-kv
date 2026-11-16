@@ -856,6 +856,29 @@ lives in simraft-kv's session table as specified, including the
 eviction contract. The Figure 8 suite of section 6.3 now enforces
 the rule that landed at M1.
 
+Status at the M4 gate: M4 is implemented as described, which
+completes the milestone map. The simulator of section 12 runs the
+driver loop with the five oracles and the structural assertions
+checked after every event, and the Wing and Gong checker of
+section 13 judges the recorded client history at the end of every
+run. Four as-built notes. First, phase budgets measure from their
+own starts: the healing budget runs from the tick the chaos phase
+ends, and a clock jump consumes budget like any other passage of
+time, so a jump changes what is pending, never what answers are
+legal. Second, the match-index monotonicity assertion is scoped
+per leadership term, because a node's progress map legitimately
+resets when it wins a new term. Third, end-of-run convergence is
+judged over the members of the final configuration, taken from
+the most current alive view; a node removed from the
+configuration keeps a frozen log and state that are expected to
+differ. Fourth, the leader append-only oracle binds within one
+leadership tenure: entries from an earlier tenure carry no
+guarantee, because as a follower the node may have them
+overwritten by the current leader (the seed sweep found this on
+seed 912). The CLI emits its JSON run summaries directly; the
+only external crates in simraft-sim are clap, crc32fast, and
+sha2, as section 3 provides.
+
 Each implementation milestone runs in two stages. Stage A lands public
 interfaces, doc comments, structural assertions, and property or fault tests
 that fail because the logic is unimplemented (todo and unimplemented are

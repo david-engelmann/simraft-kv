@@ -19,5 +19,13 @@ sha2 = "0.10"
 [dev-dependencies]
 criterion = "0.5"
 
+[[bench]]
+name = "readindex_cost"
+harness = false
+
+[[bench]]
+name = "checker_scale"
+harness = false
+
 [lints]
 workspace = true

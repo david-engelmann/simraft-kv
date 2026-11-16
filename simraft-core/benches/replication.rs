@@ -153,13 +153,29 @@ fn bench_replication(c: &mut Criterion) {
     group.bench_function("follower_append_entries", |b| {
         let mut nodes = cluster();
         elect(&mut nodes, NodeId(1));
-        let actions = nodes
+        // The proposal's sends are released only once the entry
+        // is persisted (persist-before-response), so acknowledge
+        // the persist first and take the AppendEntries from the
+        // released actions.
+        nodes
             .get_mut(&NodeId(1))
             .expect("leader exists")
             .step(Event::Propose {
                 client_id: ClientId(1),
                 seq: 1,
                 payload: vec![9_u8; 32],
+            });
+        let last = nodes
+            .get(&NodeId(1))
+            .expect("leader exists")
+            .log()
+            .last_index();
+        let actions = nodes
+            .get_mut(&NodeId(1))
+            .expect("leader exists")
+            .step(Event::Persisted {
+                kind: PersistKind::Entries,
+                up_to_index: last,
             });
         let message = actions
             .iter()

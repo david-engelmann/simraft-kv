@@ -66,7 +66,7 @@ LAT latency and resource bounds, DET determinism, ERR diagnostics.
 | M-02 | NoOp before config (SAF): a newly elected leader rejects config proposals until its current-term NoOp entry has committed. | Property test `simraft-core/tests/property_membership.rs::config_rejected_before_leader_noop_commits`. | M3 |
 | M-03 | Commit-then-step-down (SAF): a leader that removes itself steps down only after the removal entry commits, and continues to replicate until it does. It never steps down on append and never remains leader in a config that excludes it once the removal is committed. | Simulator scenario `simraft-sim/tests/scenario_self_removal.rs` asserting role per tick around the commit point, then a fresh election in the new config; core test `simraft-core/tests/property_membership.rs::leader_steps_down_only_after_self_removal_commits`. | M3 |
 | M-04 | Learner semantics (SAF): learners never vote, never start elections, and never count toward any quorum (election, commit, or ReadIndex). PromoteVoter rejects a learner whose match_index is below the leader's commit_index, naming both indexes. | Property tests `simraft-core/tests/property_membership.rs::learners_never_vote_or_count` and `::promotion_requires_caught_up_learner`. | M3 |
-| M-05 | Single-config quorums (SAF): every quorum decision (election win, commit advancement, ReadIndex confirmation) is computed against exactly one ClusterConfig, the newest whose entry exists in the deciding node's log. | Oracle `oracle::single_config_quorum` spot-checks decisions during simulator runs; code-level assertion in the quorum function exercised by `simraft-core/tests/property_membership.rs::quorum_uses_latest_single_config`. | M3 |
+| M-05 | Single-config quorums (SAF): every quorum decision (election win, commit advancement, ReadIndex confirmation) is computed against exactly one ClusterConfig, the newest whose entry exists in the deciding node's log. | Exercised on every simulator run: the core computes each quorum against the single configuration its recomputation pass derives, and the S-01 to S-05 oracles in `simraft-sim/src/oracle.rs` judge the outcomes under membership churn (scenario_self_removal, scenario_chaos_matrix); code-level assertion in the quorum function exercised by `simraft-core/tests/property_membership.rs::quorum_uses_latest_single_config`. | M3 |
 
 ## 6. Snapshots and InstallSnapshot
 
@@ -160,6 +160,25 @@ is the checklist they are audited against at every milestone gate.
     commit), and removes itself only into an empty config, which is
     rejected as a config error (a config must keep at least one voter).
     M-01, R-01, T-01 family (validation).
+
+Status at the M4 gate: the oracle module enforces the oracle
+halves of S-01 to S-05 on every event of every simulator run, and
+the harness asserts the structural assertions of section 12
+(commit and applied monotone, applied never past commit, match
+monotone within a leadership term) at the same cadence.
+scenario_chaos_matrix enforces H-01 and H-02,
+scenario_crash_matrix enforces H-03 with the disk model,
+scenario_linearizability
+and checker_verdicts enforce R-05, scenario_disruptive_rejoin
+enforces T-05, scenario_clock_jump_read enforces R-04,
+scenario_self_removal enforces the simulator half of M-03,
+scenario_commit_latency enforces L-02, determinism_cross_process
+enforces D-01, and cli_contract enforces D-03. The benches
+enforce L-01 (readindex_cost), L-03 (step_allocations), L-04
+(checker_scale), and B-01 (replication). The M-05 row above is
+conformed to the oracle as built: no separate spot-check
+function exists, and the row now says so. 84 tests pass across
+the workspace.
 
 Status at the M3 gate: property_membership enforces M-01, M-02,
 M-04, and M-05 plus the core half of M-03 (the simulator scenario
