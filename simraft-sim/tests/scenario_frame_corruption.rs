@@ -9,8 +9,10 @@ use simraft_sim::{Harness, SimConfig};
 
 #[test]
 fn corrupted_frames_are_rejected_and_the_cluster_heals() {
-    let mut faults = FaultConfig::default();
-    faults.corrupt_per_mille = 300;
+    let faults = FaultConfig {
+        corrupt_per_mille: 300,
+        ..FaultConfig::default()
+    };
     let config = SimConfig {
         seed: 77,
         faults,
