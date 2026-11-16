@@ -71,7 +71,7 @@ manifest (which lands at M1 Stage A); there is no crates/ directory.
 | --- | --- | --- | --- |
 | simraft-core | library | none, std only | The Raft protocol as a sans-I/O state machine. |
 | simraft-kv | library | none, std only | The KV state machine, client session table, canonical command and snapshot payload encoding. |
-| simraft-sim | library plus binary | clap, serde_json, sha2, crc32fast (CLI and I/O only) | The deterministic simulation harness, fault injection, safety oracles, linearizability checker, trace output, and the simraft-sim CLI. |
+| simraft-sim | library plus binary | clap, sha2, crc32fast (CLI and I/O only) | The deterministic simulation harness, fault injection, safety oracles, linearizability checker, trace output, and the simraft-sim CLI. |
 
 Dependency direction is one way: simraft-sim depends on simraft-kv and
 simraft-core; simraft-kv depends on simraft-core; simraft-core depends on
@@ -115,12 +115,12 @@ docs, and build documentation with RUSTDOCFLAGS set to deny warnings.
 | Module | Contents |
 | --- | --- |
 | rng | SplitMix64 seeding plus xoshiro256starstar stream; the only randomness source |
-| clock | Virtual clock and the deterministic event priority queue |
-| network | Packet queue, directed partition matrix, drop, duplicate, reorder faults |
+| clock | The deterministic event priority queue ordered by tick and insertion sequence |
 | disk | Simulated disk with separate durable and volatile buffers |
-| faults | Seeded fault schedule: partitions, crashes, clock jumps, healing phase |
-| harness | Multi-node driver loop, tick-by-tick oracle invocation |
-| oracle | The five core safety oracles plus commit and dedup checkers |
+| wire | The section 7.1 frame codec: canonical message framing with CRC-32 |
+| faults | Fault configuration: drop, duplicate, and latency rates, directed partition cuts, scripted operations |
+| harness | Multi-node driver loop: packet queue and delivery, disk and fsync scheduling, the client workload, tick-by-tick oracle invocation |
+| oracle | The five core safety oracles plus the structural assertions (monotone commit, applied, and match) |
 | history | Client operation history recording for linearizability |
 | liz | Per-key Wing and Gong linearizability checker with visited-state memoization |
 | trace | Canonical trace lines and the final state digest (sha2) |
@@ -701,8 +701,8 @@ by key: a history over many keys is linearizable if and only if every
 per-key sub-history is, and each per-key model state is a single
 Option<Value>, which keeps the model small and exact. Within a partition
 the search maintains the set of linearized operations as a sorted bitset
-and memoizes visited (linearized_set, model_state) pairs in a BTreeMap;
-a revisited pair is pruned immediately. Pending operations are tried both
+and memoizes visited (linearized set, dropped set, model state) triples
+in a BTreeSet; a revisited triple is pruned immediately. Pending operations are tried both
 ways, linearized at a legal point or dropped, matching the standard
 treatment of incomplete histories. Results are three-valued: Linearizable,
 NotLinearizable (with the key and a minimal offending prefix), or Unknown
@@ -860,7 +860,7 @@ Status at the M4 gate: M4 is implemented as described, which
 completes the milestone map. The simulator of section 12 runs the
 driver loop with the five oracles and the structural assertions
 checked after every event, and the Wing and Gong checker of
-section 13 judges the recorded client history at the end of every
+section 12.6 judges the recorded client history at the end of every
 run. Four as-built notes. First, phase budgets measure from their
 own starts: the healing budget runs from the tick the chaos phase
 ends, and a clock jump consumes budget like any other passage of
