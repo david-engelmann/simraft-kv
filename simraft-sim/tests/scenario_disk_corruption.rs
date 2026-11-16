@@ -10,7 +10,11 @@ use simraft_sim::faults::{DirectedCut, FaultConfig, ScriptedOp};
 use simraft_sim::{Harness, SimConfig};
 
 fn trace_has(report: &simraft_sim::RunReport, needle: &str) -> bool {
-    report.trace.lines().iter().any(|line| line.contains(needle))
+    report
+        .trace
+        .lines()
+        .iter()
+        .any(|line| line.contains(needle))
 }
 
 #[test]

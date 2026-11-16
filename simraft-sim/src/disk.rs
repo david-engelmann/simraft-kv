@@ -95,8 +95,7 @@ fn encode_log_record(index: LogIndex, entry: &LogEntry) -> Vec<u8> {
 fn record_span(log: &[u8], index: LogIndex) -> Option<(usize, usize)> {
     let mut offset = 0usize;
     while offset + HEADER_LEN <= log.len() {
-        let record_len =
-            u32::from_le_bytes(log[offset + 6..offset + 10].try_into().ok()?) as usize;
+        let record_len = u32::from_le_bytes(log[offset + 6..offset + 10].try_into().ok()?) as usize;
         if record_len < HEADER_LEN + CRC_LEN || offset + record_len > log.len() {
             return None;
         }
