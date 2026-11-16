@@ -45,14 +45,22 @@ and tied to a test that would fail if the promise broke.
   request deduplication on both sides of a commit, in flight and
   after the fact. This part landed as
   milestone M2.
-
-Snapshots and membership changes are in progress as milestone M3. The simulator, the
-checker, and the command line tools arrive at M4.
+- Snapshots with chunked transfer, so a server that falls too far
+  behind receives the state it missed instead of replaying the
+  whole log, and one-at-a-time membership changes, so servers join
+  and leave without stopping the group. This part landed as
+  milestone M3.
+- A deterministic simulator that runs the whole system on a
+  virtual clock with dropped, duplicated, and reordered messages,
+  crashes, and clock jumps, checks five safety rules after every
+  event, and verifies the recorded client history for
+  linearizability at the end of every run. This part landed as
+  milestone M4, which completes the planned build.
 
 ## How it is used
 
-There is no server binary yet. Today the crates are libraries, and
-the core is driven like this.
+The protocol crates are libraries, and the core is driven like
+this.
 
 ```rust
 let actions = node.step(event);
@@ -65,6 +73,17 @@ for action in actions {
 Your code owns the network, the disk, and the clock. The core owns
 the decisions. That split is the whole design, and it is what makes
 the system replayable under test.
+
+The simulator is the one binary in the workspace. It runs a
+seeded cluster through chaos and healing phases and prints one
+summary line per seed.
+
+```sh
+cargo run -p simraft-sim --release -- --seed 912 --seeds 1
+```
+
+The same seed in a separate process produces byte-identical
+output, so any failure a seed sweep finds replays exactly.
 
 ## Running the tests
 
@@ -79,6 +98,19 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 The property suites scale with the `PROPTEST_CASES` environment
 variable. Continuous integration runs 1,000 cases per pull request
 and 10,000 on the main branch.
+
+## Benchmarks
+
+Measured with the criterion benches in this repository, recorded
+from a local run on 2026-11-16. A full propose and commit round
+on a three-node cluster driven directly, one 32-byte entry per
+round, takes a median of 16.4 microseconds, about 60,900 rounds
+per second. A follower processing one AppendEntries message
+takes a median of 1.46 microseconds. The linearizability checker
+decided a generated history of 10,000 operations over 64 keys
+after visiting 10,000 states, one per operation, because the
+history is sequential per key. Reproduce with
+`cargo bench --workspace`.
 
 ## Where to read more
 

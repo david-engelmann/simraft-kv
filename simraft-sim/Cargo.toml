@@ -12,6 +12,20 @@ categories = ["algorithms", "development-tools::testing"]
 [dependencies]
 simraft-core = { path = "../simraft-core" }
 simraft-kv = { path = "../simraft-kv" }
+clap = { version = "4", features = ["derive"] }
+crc32fast = "1"
+sha2 = "0.10"
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "readindex_cost"
+harness = false
+
+[[bench]]
+name = "checker_scale"
+harness = false
 
 [lints]
 workspace = true
