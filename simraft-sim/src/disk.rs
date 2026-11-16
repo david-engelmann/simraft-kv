@@ -189,10 +189,12 @@ impl SimDisk {
             keep += 1;
         }
         if restore.torn.is_some() && keep == restore.entries.len() {
-            if self.volatile_entries.len() > ends.len() {
-                // Pure appends past a torn record: the torn
-                // record and everything durable after it stay
-                // exactly as they are on the disk.
+            if self.volatile_entries.len() >= ends.len() {
+                // The volatile log still covers every durable
+                // record: nothing already durable is rewritten,
+                // so the torn record and everything after it
+                // stay exactly as they are on the disk, and any
+                // newer entries append past them.
                 keep = ends.len();
             } else if self.volatile_entries.len() > restore.entries.len() {
                 // The volatile log was rewritten from the torn
@@ -437,6 +439,23 @@ mod tests {
         let restore = disk.restore_log();
         assert_eq!(restore.entries.len(), 2);
         let torn = restore.torn.expect("the corruption survives the fsync");
+        assert_eq!(torn.index, LogIndex(3));
+    }
+
+    #[test]
+    fn an_fsync_with_no_new_entries_preserves_a_corrupt_record() {
+        let mut disk = SimDisk::new();
+        disk.write_entries(LogIndex(1), &[entry(1), entry(1), entry(1), entry(1)]);
+        disk.fsync_entries();
+        assert!(disk.corrupt_log_record(LogIndex(3)));
+        // A re-persist of the same tail (the core re-emits
+        // PersistEntries for entries it already holds) fsyncs
+        // with the volatile log exactly as long as the durable
+        // one: the corrupt record must still survive.
+        disk.fsync_entries();
+        let restore = disk.restore_log();
+        assert_eq!(restore.entries.len(), 2);
+        let torn = restore.torn.expect("the corruption survives a no-op fsync");
         assert_eq!(torn.index, LogIndex(3));
     }
 
