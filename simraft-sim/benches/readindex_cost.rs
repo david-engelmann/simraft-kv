@@ -12,8 +12,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use simraft_core::{
-    Action, ClientId, ClusterConfig, Config, Event, LogIndex, Message, Node, NodeId,
-    PersistKind, Role,
+    Action, ClientId, ClusterConfig, Config, Event, LogIndex, Message, Node, NodeId, PersistKind,
+    Role,
 };
 use simraft_kv::{KvOp, encode_command};
 
@@ -76,44 +76,43 @@ fn route_counting(
     let mut sends = 0_usize;
     let mut persists = 0_usize;
     let mut queue: Vec<(NodeId, Event)> = Vec::new();
-    let mut collect =
-        |queue: &mut Vec<(NodeId, Event)>, source: NodeId, actions: Vec<Action>| {
-            for action in actions {
-                match action {
-                    Action::Send { to, msg } => {
-                        if source == count_from {
-                            sends += 1;
-                        }
-                        queue.push((to, Event::Message { from: source, msg }));
+    let mut collect = |queue: &mut Vec<(NodeId, Event)>, source: NodeId, actions: Vec<Action>| {
+        for action in actions {
+            match action {
+                Action::Send { to, msg } => {
+                    if source == count_from {
+                        sends += 1;
                     }
-                    Action::PersistHardState { .. } => {
-                        if source == count_from {
-                            persists += 1;
-                        }
-                        queue.push((
-                            source,
-                            Event::Persisted {
-                                kind: PersistKind::HardState,
-                                up_to_index: LogIndex::ZERO,
-                            },
-                        ));
-                    }
-                    Action::PersistEntries { .. } => {
-                        if source == count_from {
-                            persists += 1;
-                        }
-                        queue.push((
-                            source,
-                            Event::Persisted {
-                                kind: PersistKind::Entries,
-                                up_to_index: LogIndex::ZERO,
-                            },
-                        ));
-                    }
-                    _ => {}
+                    queue.push((to, Event::Message { from: source, msg }));
                 }
+                Action::PersistHardState { .. } => {
+                    if source == count_from {
+                        persists += 1;
+                    }
+                    queue.push((
+                        source,
+                        Event::Persisted {
+                            kind: PersistKind::HardState,
+                            up_to_index: LogIndex::ZERO,
+                        },
+                    ));
+                }
+                Action::PersistEntries { .. } => {
+                    if source == count_from {
+                        persists += 1;
+                    }
+                    queue.push((
+                        source,
+                        Event::Persisted {
+                            kind: PersistKind::Entries,
+                            up_to_index: LogIndex::ZERO,
+                        },
+                    ));
+                }
+                _ => {}
             }
-        };
+        }
+    };
     collect(&mut queue, from, actions);
     while let Some((to, event)) = queue.pop() {
         let event = match event {

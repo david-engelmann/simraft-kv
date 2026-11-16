@@ -20,8 +20,7 @@ use simraft_sim::liz::{Checker, Verdict};
 fn generated_history() -> History {
     let mut history = History::new();
     let mut tick = 0_u64;
-    let mut values: std::collections::BTreeMap<u64, Vec<u8>> =
-        std::collections::BTreeMap::new();
+    let mut values: std::collections::BTreeMap<u64, Vec<u8>> = std::collections::BTreeMap::new();
     for i in 0..10_000_u64 {
         let key_no = i % 64;
         let key = format!("key{key_no}").into_bytes();

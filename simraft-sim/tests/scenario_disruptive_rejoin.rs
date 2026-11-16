@@ -9,18 +9,20 @@ use simraft_sim::{Harness, SimConfig};
 #[test]
 fn isolated_node_rejoins_without_disruption() {
     let mut faults = FaultConfig::none();
-    // Node 3 is fully isolated from tick 300 until the end of the
-    // chaos phase (tick 4000).
+    // Node 3 is fully isolated from tick 2500 (after the first
+    // election has certainly settled: the longest election timeout
+    // is 1000 ticks) until the end of the chaos phase at 8000.
     for (from, to) in [(1, 3), (3, 1), (2, 3), (3, 2)] {
         faults.partitions.push(DirectedCut {
             from: NodeId(from),
             to: NodeId(to),
-            start: 300,
-            end: 4_000,
+            start: 2_500,
+            end: 8_000,
         });
     }
     let config = SimConfig {
         seed: 51,
+        chaos_ticks: 8_000,
         faults,
         ..SimConfig::default()
     };
@@ -31,7 +33,10 @@ fn isolated_node_rejoins_without_disruption() {
         .first()
         .copied()
         .expect("a leader must have been elected");
-    assert!(first_tick < 300, "the first leader predates the isolation");
+    assert!(
+        first_tick < 2_500,
+        "the first leader predates the isolation"
+    );
     assert_eq!(
         report.final_leader,
         Some(first_leader),

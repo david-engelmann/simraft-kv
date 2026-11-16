@@ -11,8 +11,8 @@ use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use simraft_core::{
-    Action, ClientId, ClusterConfig, Config, Event, LogIndex, Message, Node, NodeId,
-    PersistKind, Role,
+    Action, ClientId, ClusterConfig, Config, Event, LogIndex, Message, Node, NodeId, PersistKind,
+    Role,
 };
 
 fn cluster() -> BTreeMap<NodeId, Node> {

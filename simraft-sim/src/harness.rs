@@ -16,8 +16,8 @@
 use std::collections::BTreeMap;
 
 use simraft_core::{
-    Action, ClientId, ClusterConfig, Config, ConfigChange, EntryKind, Event, HardState,
-    LogIndex, Message, Node, NodeId, PersistKind, Role, SnapshotMeta, Term,
+    Action, ClientId, ClusterConfig, Config, ConfigChange, EntryKind, Event, HardState, LogIndex,
+    Message, Node, NodeId, PersistKind, Role, SnapshotMeta, Term,
 };
 use simraft_kv::{
     ApplyOutcome, CommandResult, KvOp, KvStateMachine, encode_command, encode_snapshot,
@@ -180,10 +180,21 @@ enum FsyncKind {
 
 #[derive(Debug)]
 enum SimEvent {
-    Deliver { to: NodeId, frame: Vec<u8> },
-    Poll { node: NodeId },
-    Fsync { node: NodeId, epoch: u64, kind: FsyncKind },
-    Restart { node: NodeId },
+    Deliver {
+        to: NodeId,
+        frame: Vec<u8>,
+    },
+    Poll {
+        node: NodeId,
+    },
+    Fsync {
+        node: NodeId,
+        epoch: u64,
+        kind: FsyncKind,
+    },
+    Restart {
+        node: NodeId,
+    },
     DriveClients,
 }
 
@@ -337,16 +348,13 @@ impl<'a> Driver<'a> {
             self.fire_scripted();
             self.dispatch(event);
             if let Err(violation) = self.check_oracles() {
-                self.trace.push(
-                    self.now,
-                    &format!("oracle_failure {}", violation.oracle),
-                );
+                self.trace
+                    .push(self.now, &format!("oracle_failure {}", violation.oracle));
                 oracle_failure = Some(violation);
                 break;
             }
             self.track_leadership();
-            if self.now >= self.run_end && self.queue.peek_tick().is_none_or(|t| t > self.run_end)
-            {
+            if self.now >= self.run_end && self.queue.peek_tick().is_none_or(|t| t > self.run_end) {
                 completed = true;
                 break;
             }
@@ -404,7 +412,11 @@ impl<'a> Driver<'a> {
     }
 
     fn fire_scripted(&mut self) {
-        while self.scripted.first().is_some_and(|(tick, _)| *tick <= self.now) {
+        while self
+            .scripted
+            .first()
+            .is_some_and(|(tick, _)| *tick <= self.now)
+        {
             let (_, op) = self.scripted.remove(0);
             match op {
                 ScriptedOp::Crash(id) => self.crash_node(id),
@@ -462,9 +474,13 @@ impl<'a> Driver<'a> {
                 sim.disk.durable_snapshot().cloned(),
             )
         };
-        let mut node =
-            Node::new(id, self.config.core.clone(), self.genesis.clone(), self.config.seed ^ id.0)
-                .expect("the run's core config always validates");
+        let mut node = Node::new(
+            id,
+            self.config.core.clone(),
+            self.genesis.clone(),
+            self.config.seed ^ id.0,
+        )
+        .expect("the run's core config always validates");
         let mut machine = KvStateMachine::new(SESSION_CAPACITY);
         let mut actions = node.step(Event::Restored {
             hard_state: hard,
@@ -492,10 +508,8 @@ impl<'a> Driver<'a> {
         }
         self.trace.push(self.now, &format!("restart {id}"));
         self.handle_actions(id, actions);
-        self.queue.push(
-            self.now + POLL_INTERVAL,
-            SimEvent::Poll { node: id },
-        );
+        self.queue
+            .push(self.now + POLL_INTERVAL, SimEvent::Poll { node: id });
     }
 
     fn dispatch(&mut self, event: SimEvent) {
@@ -532,10 +546,8 @@ impl<'a> Driver<'a> {
             SimEvent::DriveClients => {
                 self.drive_clients();
                 if self.now + CLIENT_INTERVAL <= self.run_end {
-                    self.queue.push(
-                        self.now + CLIENT_INTERVAL,
-                        SimEvent::DriveClients,
-                    );
+                    self.queue
+                        .push(self.now + CLIENT_INTERVAL, SimEvent::DriveClients);
                 }
             }
         }
@@ -621,7 +633,10 @@ impl<'a> Driver<'a> {
                         },
                     );
                 }
-                Action::PersistEntries { from_index, entries } => {
+                Action::PersistEntries {
+                    from_index,
+                    entries,
+                } => {
                     let epoch = {
                         let sim = self.nodes.get_mut(&id).expect("action source exists");
                         sim.disk.write_entries(from_index, &entries);
@@ -667,14 +682,11 @@ impl<'a> Driver<'a> {
                 }
                 Action::LoadSnapshot { meta } => self.serve_load_snapshot(id, meta),
                 Action::ConfigResponse { change, result } => {
-                    self.trace.push(
-                        self.now,
-                        &format!("config_response {change:?} {result:?}"),
-                    );
+                    self.trace
+                        .push(self.now, &format!("config_response {change:?} {result:?}"));
                 }
                 Action::StepDown { term } => {
-                    self.trace
-                        .push(self.now, &format!("step_down {id} {term}"));
+                    self.trace.push(self.now, &format!("step_down {id} {term}"));
                 }
             }
         }
@@ -701,7 +713,10 @@ impl<'a> Driver<'a> {
         let latency = if chaos {
             self.rng.range_inclusive(
                 self.config.faults.latency_min,
-                self.config.faults.latency_max.max(self.config.faults.latency_min),
+                self.config
+                    .faults
+                    .latency_max
+                    .max(self.config.faults.latency_min),
             )
         } else {
             1
@@ -716,10 +731,8 @@ impl<'a> Driver<'a> {
         );
         if chaos && self.rng.per_mille(self.config.faults.duplicate_per_mille) {
             let extra = 1 + self.rng.next_below(3);
-            self.queue.push(
-                now + latency + extra,
-                SimEvent::Deliver { to, frame },
-            );
+            self.queue
+                .push(now + latency + extra, SimEvent::Deliver { to, frame });
         }
     }
 
@@ -730,12 +743,7 @@ impl<'a> Driver<'a> {
             sim.machine.apply(index, entry)
         };
         if let Ok(ApplyOutcome::Applied { result } | ApplyOutcome::Cached { result }) = outcome {
-            if let EntryKind::Command {
-                client_id,
-                seq,
-                ..
-            } = &entry.kind
-            {
+            if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
                 let mapped = match result {
                     CommandResult::Ack => OpResult::Ack,
                     CommandResult::Value(v) => OpResult::Value(Some(v)),
@@ -769,7 +777,9 @@ impl<'a> Driver<'a> {
     fn handle_read_ready(&mut self, id: NodeId, request_id: u64, key: &[u8], read_index: LogIndex) {
         let served = {
             let sim = self.nodes.get(&id).expect("read targets a node");
-            sim.machine.read(read_index, key).map(|v| v.map(<[u8]>::to_vec))
+            sim.machine
+                .read(read_index, key)
+                .map(|v| v.map(<[u8]>::to_vec))
         };
         match served {
             Some(value) => {
@@ -803,13 +813,7 @@ impl<'a> Driver<'a> {
             Op::Get { key } => key.clone(),
             _ => return,
         };
-        self.step_node(
-            target,
-            Event::ReadIndex {
-                request_id,
-                key,
-            },
-        );
+        self.step_node(target, Event::ReadIndex { request_id, key });
     }
 
     fn handle_client_response(
@@ -840,8 +844,7 @@ impl<'a> Driver<'a> {
                 let Some(open) = self.open_writes.get(&(client_id, seq)).cloned() else {
                     return;
                 };
-                let Some(target) =
-                    leader.filter(|t| self.nodes.get(t).is_some_and(|n| n.alive))
+                let Some(target) = leader.filter(|t| self.nodes.get(t).is_some_and(|n| n.alive))
                 else {
                     return;
                 };
@@ -854,11 +857,9 @@ impl<'a> Driver<'a> {
                             value: value.clone(),
                         },
                     ),
-                    Op::Delete { key } => encode_command(
-                        client_id,
-                        seq,
-                        &KvOp::Delete { key: key.clone() },
-                    ),
+                    Op::Delete { key } => {
+                        encode_command(client_id, seq, &KvOp::Delete { key: key.clone() })
+                    }
                     Op::Get { .. } => return,
                 };
                 self.step_node(
@@ -919,9 +920,7 @@ impl<'a> Driver<'a> {
                 && sim.node.last_applied() >= commit
             {
                 let term = log.term_at(commit).unwrap_or(log.base_term());
-                let parts =
-                    sim.machine
-                        .snapshot_parts(commit, term, sim.node.cluster());
+                let parts = sim.machine.snapshot_parts(commit, term, sim.node.cluster());
                 Some((
                     SnapshotMeta {
                         last_included_index: commit,
@@ -965,12 +964,13 @@ impl<'a> Driver<'a> {
         self.clients[ci].counter += 1;
         let seq = self.clients[ci].seq;
         let counter = self.clients[ci].counter;
-        let key = format!("k{}", self.rng.next_below(self.config.keys.max(1) as u64))
-            .into_bytes();
+        let key = format!("k{}", self.rng.next_below(self.config.keys.max(1) as u64)).into_bytes();
         let roll = self.rng.next_below(10);
         if roll < 2 {
             // ReadIndex read.
-            let record = self.history.invoke(client_id.0, self.now, Op::Get { key: key.clone() });
+            let record = self
+                .history
+                .invoke(client_id.0, self.now, Op::Get { key: key.clone() });
             let request_id = self.next_request;
             self.next_request += 1;
             self.open_reads.insert(
@@ -994,10 +994,7 @@ impl<'a> Driver<'a> {
                     KvOp::Put { key, value },
                 )
             } else {
-                (
-                    Op::Delete { key: key.clone() },
-                    KvOp::Delete { key },
-                )
+                (Op::Delete { key: key.clone() }, KvOp::Delete { key })
             };
             let record = self.history.invoke(client_id.0, self.now, op);
             let payload = encode_command(client_id, seq, &kv);
@@ -1085,12 +1082,9 @@ impl<'a> Driver<'a> {
             let current = leaders[0];
             if self.current_leader != Some(current) {
                 self.current_leader = Some(current);
-                self.leader_history
-                    .push((self.now, current.0, current.1));
-                self.trace.push(
-                    self.now,
-                    &format!("leader {} {}", current.0, current.1),
-                );
+                self.leader_history.push((self.now, current.0, current.1));
+                self.trace
+                    .push(self.now, &format!("leader {} {}", current.0, current.1));
             }
         }
     }
@@ -1155,8 +1149,8 @@ impl<'a> Driver<'a> {
             digest_bytes.extend_from_slice(Self::log_digest(sim).as_bytes());
             digest_bytes.extend_from_slice(Self::state_digest_node(sim).as_bytes());
         }
-        let verdict = Checker::with_budget(self.config.checker_budget)
-            .check(self.history.records());
+        let verdict =
+            Checker::with_budget(self.config.checker_budget).check(self.history.records());
         let (final_leader, final_leader_term) = match self.current_leader {
             Some((id, term))
                 if self
