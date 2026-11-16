@@ -33,11 +33,12 @@ const CRC_LEN: usize = 4;
 /// The CRC domain prefix for log records (section 7.3).
 const LOG_CRC_DOMAIN: &[u8] = b"SRKV/log/v1";
 
-/// A torn durable log record, found while restoring: the record
-/// at `byte_offset`, claiming `index`, whose stored CRC-32
-/// (`expected_crc`) does not match the computed one
-/// (`actual_crc`). A record too damaged to read its header or
-/// checksum reports zeroes for the fields it cannot supply.
+/// A torn durable log record, found while restoring.
+///
+/// The record sits at `byte_offset`, claims `index`, and its
+/// stored CRC-32 (`expected_crc`) does not match the computed
+/// one (`actual_crc`). A record too damaged to read its header
+/// or checksum reports zeroes for the fields it cannot supply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TornRecord {
     /// The byte offset of the bad record in the durable log.
@@ -178,9 +179,18 @@ impl SimDisk {
     }
 
     /// Restore the durable log: decode its records in index
-    /// order, stopping at the first bad one. The valid prefix is
-    /// the restored log; a bad record and everything after it is
-    /// a torn tail, reported and dropped (section 7.3).
+    /// order, stopping at the first bad one.
+    ///
+    /// The valid prefix is the restored log; a bad record and
+    /// everything after it is a torn tail, reported and dropped
+    /// (section 7.3).
+    ///
+    /// # Panics
+    ///
+    /// The field reads use `expect` on slices whose lengths the
+    /// guards above them establish (a record is only read after
+    /// its header and total length check out), so the panics are
+    /// unreachable unless those guards are changed.
     #[must_use]
     pub fn restore_log(&self) -> LogRestore {
         let mut entries = Vec::new();
