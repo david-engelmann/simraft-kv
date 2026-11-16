@@ -2,7 +2,11 @@
 //! third of all chaos-phase frames carrying a flipped bit, every
 //! corrupted frame is rejected by the receiver's frame checks
 //! and never stepped into a node, no safety oracle fires, and
-//! the cluster still heals and converges.
+//! the cluster still heals and converges. The crash and clock
+//! faults are off for this scenario: on seed 77 a clock jump
+//! lands at tick 274 and skips nearly the whole chaos phase, so
+//! almost no frames are sent at all and the corruption path
+//! would go unexercised.
 
 use simraft_sim::faults::FaultConfig;
 use simraft_sim::{Harness, SimConfig};
@@ -11,6 +15,8 @@ use simraft_sim::{Harness, SimConfig};
 fn corrupted_frames_are_rejected_and_the_cluster_heals() {
     let faults = FaultConfig {
         corrupt_per_mille: 300,
+        crash_per_mille: 0,
+        clock_jump_per_mille: 0,
         ..FaultConfig::default()
     };
     let config = SimConfig {
