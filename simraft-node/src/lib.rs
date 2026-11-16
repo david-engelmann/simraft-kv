@@ -8,23 +8,24 @@
 //! persist-before-response contract assumes, and serving client
 //! Put, Get, and Delete operations against the KV state machine.
 //!
-//! Lane 1 Stage A state: the public contract in this crate
-//! (configuration, validation, errors, and the entry points) is
-//! final, and the end-to-end tests in `tests/` state the
-//! behaviors the lane promises. The runtime itself lands at
-//! Stage B: `run_node` and `run_client` validate their inputs,
-//! prepare the data directory, and then return
-//! `NodeError::RuntimeNotYetImplemented` rather than serving.
+//! The runtime is three modules behind this contract: `store`
+//! (the section 7.3 durable records over files), `runtime`
+//! (threads, TCP transport in the section 7.1 frame format, and
+//! the driver loop), and `client` (the SRCL client protocol and
+//! the redirect-following, retrying client implementation).
 //!
-//! One design question is recorded openly, per docs/ROADMAP.md
-//! Lane 1: the section 7.1 frame codec currently lives in
-//! simraft-sim. The recommendation is a small simraft-wire crate
-//! that the simulator and this adapter share, leaving the core
+//! Lane 1's recorded design question is settled: the section
+//! 7.1 frame codec lives in simraft-wire, shared by the
+//! simulator and this adapter, leaving the core
 //! serialization-free as docs/ARCHITECTURE.md section 3
-//! requires. Stage B opens with that extraction.
+//! requires.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
+
+pub mod client;
+pub mod runtime;
+pub mod store;
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -195,9 +196,19 @@ pub enum NodeError {
         /// The underlying I/O error.
         source: std::io::Error,
     },
-    /// Stage A contract marker: configuration is accepted, the
-    /// runtime lands at Lane 1 Stage B.
-    RuntimeNotYetImplemented,
+    /// A durable record is corrupt in a way recovery cannot
+    /// repair (a torn log tail is repaired and reported, not
+    /// an error).
+    CorruptStore {
+        /// What is corrupt, with the deciding values.
+        detail: String,
+    },
+    /// A client-side operation could not complete: a transport
+    /// failure, a timeout, or a server report, with context.
+    Unavailable {
+        /// The failure, with the deciding values.
+        detail: String,
+    },
 }
 
 impl fmt::Display for NodeError {
@@ -223,10 +234,12 @@ impl fmt::Display for NodeError {
             Self::Io { path, source } => {
                 write!(f, "I/O failed at {}: {source}", path.display())
             }
-            Self::RuntimeNotYetImplemented => write!(
-                f,
-                "the simraft-node runtime lands at Lane 1 Stage B; Stage A accepts and validates configuration only"
-            ),
+            Self::CorruptStore { detail } => {
+                write!(f, "the durable store is corrupt: {detail}")
+            }
+            Self::Unavailable { detail } => {
+                write!(f, "the operation is unavailable: {detail}")
+            }
         }
     }
 }
@@ -242,39 +255,30 @@ impl std::error::Error for NodeError {
 
 /// Run one node process until it is stopped.
 ///
-/// Stage A contract: validates the configuration and creates the
-/// data directory, then returns
-/// `NodeError::RuntimeNotYetImplemented`. Stage B replaces that
-/// return with the serving loop.
+/// The implementation is `runtime::run_node`: boot restores
+/// the durable state, then the driver loop serves until the
+/// process is stopped or a storage failure ends the run.
 ///
 /// # Errors
-/// Returns the first validation or I/O failure, with context.
+/// Returns the first validation, configuration, or storage
+/// failure, with context.
 pub fn run_node(config: &NodeConfig) -> Result<(), NodeError> {
-    config.validate()?;
-    std::fs::create_dir_all(&config.data_dir).map_err(|e| NodeError::Io {
-        path: config.data_dir.clone(),
-        source: e,
-    })?;
-    Err(NodeError::RuntimeNotYetImplemented)
+    runtime::run_node(config)
 }
 
 /// Issue one client operation against the member at `server`.
 ///
-/// Stage A contract: returns
-/// `NodeError::RuntimeNotYetImplemented`. Stage B performs the
-/// operation, following leader hints between members, and
-/// returns the value for a Get and `None` for writes.
+/// The implementation is `client::run_client`: it follows
+/// leader redirects between members and retries transient
+/// failures within a budget, always under one (client id,
+/// sequence) identity, and returns the value for a Get and
+/// `None` for writes.
 ///
 /// # Errors
-/// Returns the runtime marker at Stage A; at Stage B, the first
-/// transport or protocol failure, with context.
-#[allow(
-    clippy::missing_const_for_fn,
-    reason = "the signature is final at Stage A; the Stage B body performs socket I/O and cannot be const"
-)]
+/// Returns `NodeError::Unavailable` with the last failure's
+/// context when the operation cannot complete.
 pub fn run_client(server: SocketAddr, op: &ClientOp) -> Result<Option<Vec<u8>>, NodeError> {
-    let _ = (server, op);
-    Err(NodeError::RuntimeNotYetImplemented)
+    client::run_client(server, op)
 }
 
 #[cfg(test)]

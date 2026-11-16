@@ -1,25 +1,31 @@
 //! End-to-end behaviors of a real three-node cluster on
 //! localhost (docs/ROADMAP.md Lane 1). These tests are the
-//! lane's Stage A contract: they spawn the compiled
-//! simraft-node binary, drive it through its client mode, and
-//! assert the durability, failover, and recovery behaviors the
-//! adapter promises in docs/INVARIANTS.md section 10 (rows A-01
-//! to A-03). They fail at Stage A, where the binary validates
-//! its configuration and reports that the runtime is not yet
-//! implemented, and pass at Stage B.
+//! lane's contract, landed red at Stage A and green at Stage
+//! B: they spawn the compiled simraft-node binary, drive it
+//! through its client mode, and assert the durability,
+//! failover, and recovery behaviors the adapter promises in
+//! docs/INVARIANTS.md section 10 (rows A-01 to A-03).
 
 use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_simraft-node");
+
+/// One cluster at a time across this binary's tests: nine node
+/// processes with fsync-heavy drivers oversubscribe the test
+/// machine, and an unbound ephemeral port can be handed to an
+/// unrelated socket while a node is still starting.
+static CLUSTER_LOCK: Mutex<()> = Mutex::new(());
 
 /// A running cluster of three node processes on ephemeral ports.
 struct Cluster {
     children: Vec<Child>,
     addrs: Vec<String>,
     dirs: Vec<PathBuf>,
+    _lock: MutexGuard<'static, ()>,
 }
 
 fn free_addr() -> String {
@@ -37,6 +43,11 @@ fn data_dir(tag: &str) -> PathBuf {
 
 impl Cluster {
     fn start(tag: &str) -> Self {
+        // A panicked sibling test must not cascade: the lock
+        // guards no shared state, only serialization.
+        let lock = CLUSTER_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let addrs: Vec<String> = (0..3).map(|_| free_addr()).collect();
         let specs: Vec<String> = addrs
             .iter()
@@ -67,6 +78,7 @@ impl Cluster {
             children,
             addrs,
             dirs,
+            _lock: lock,
         };
         cluster.wait_ready();
         cluster
@@ -90,10 +102,7 @@ impl Cluster {
                     break;
                 }
                 if let Some(status) = self.children[i].try_wait().expect("poll the node process") {
-                    panic!(
-                        "node {} exited with {status} before serving; Stage A reports the runtime as not yet implemented",
-                        i + 1
-                    );
+                    panic!("node {} exited with {status} before serving", i + 1);
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
@@ -179,6 +188,10 @@ fn writes_survive_leader_restart() {
 /// A-02: after a failover, a read returns the latest committed
 /// value, never an older one.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the cluster guard is the serialization lock and must live until the cluster is torn down at the end of the test"
+)]
 fn read_after_failover_returns_latest_committed() {
     let mut cluster = Cluster::start("failover");
     client_put(&cluster.addrs[0], "k", "first").expect("the first write commits");
@@ -197,6 +210,10 @@ fn read_after_failover_returns_latest_committed() {
 /// A-03: a node restarted after falling behind rejoins, catches
 /// up, and serves the current state through its own address.
 #[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the cluster guard is the serialization lock and must live until the cluster is torn down at the end of the test"
+)]
 fn restarted_node_catches_up() {
     let mut cluster = Cluster::start("catchup");
     cluster.kill(2);

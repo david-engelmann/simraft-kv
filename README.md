@@ -27,9 +27,15 @@ and tied to a test that would fail if the promise broke.
   asked for so a retried request never runs twice, and serves
   linearizable reads, meaning a read is guaranteed to reflect every
   write that finished before it started.
-- `simraft-sim` will hold the deterministic simulator, the fault
-  injector, and the linearizability checker. It is a placeholder
-  until milestone M4.
+- `simraft-sim` holds the deterministic simulator, the fault
+  injector, and the linearizability checker.
+- `simraft-wire` holds the message frame format that both the
+  simulator and the real adapter speak, so the bytes tested in
+  simulation are the bytes real nodes exchange.
+- `simraft-node` is the real adapter. It runs one core node as a
+  process, with files for storage and TCP for transport, and has
+  a client mode for putting, getting, and deleting keys against
+  a running cluster.
 
 ## What works today
 
@@ -122,6 +128,9 @@ history is sequential per key. Reproduce with
   test, oracle, or benchmark that enforces it.
 - `DECISIONS.md` records the founding choices for the project and
   where each one came from.
+- `docs/ROADMAP.md` is the post-M4 plan: a real I/O adapter first,
+  then a ruder simulator, measured performance work, and
+  operability, in that order and for stated reasons.
 
 ## License
 

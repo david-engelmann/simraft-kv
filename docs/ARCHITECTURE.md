@@ -66,19 +66,27 @@ The workspace has exactly three crates in Milestones 1 to 4. Workspace
 layout: the crates live at the repository root as simraft-core/,
 simraft-kv/, and simraft-sim/, next to a root Cargo.toml workspace
 manifest (which lands at M1 Stage A); there is no crates/ directory.
+Post-M4 Lane 1 (docs/ROADMAP.md) adds two crates on the same layout:
+simraft-wire, the shared section 7.1 frame codec extracted from
+simraft-sim, and simraft-node, the real I/O adapter.
 
 | Crate | Kind | External dependencies | Responsibility |
 | --- | --- | --- | --- |
 | simraft-core | library | none, std only | The Raft protocol as a sans-I/O state machine. |
 | simraft-kv | library | none, std only | The KV state machine, client session table, canonical command and snapshot payload encoding. |
-| simraft-sim | library plus binary | clap, serde_json, sha2, crc32fast (CLI and I/O only) | The deterministic simulation harness, fault injection, safety oracles, linearizability checker, trace output, and the simraft-sim CLI. |
+| simraft-sim | library plus binary | clap, sha2 (CLI and I/O only) | The deterministic simulation harness, fault injection, safety oracles, linearizability checker, trace output, and the simraft-sim CLI. |
+| simraft-wire | library | crc32fast | The section 7.1 message frame codec, shared by the simulator and the adapter. |
+| simraft-node | library plus binary | clap, crc32fast (I/O only) | The real I/O adapter: file storage in the section 7.3 formats, TCP transport in the section 7.1 frame format, and the node binary with its client mode. |
 
-Dependency direction is one way: simraft-sim depends on simraft-kv and
-simraft-core; simraft-kv depends on simraft-core; simraft-core depends on
-nothing outside std. proptest and criterion appear only as dev-dependencies
-(property tests and benchmarks). crc32fast and sha2 appear only in simraft-sim
-and in future storage or transport adapters, never in the core. The core does
-not serialize at all (section 7), so it never needs a checksum or hash crate.
+Dependency direction is one way: simraft-sim depends on simraft-kv,
+simraft-core, and simraft-wire (re-exported as its wire module);
+simraft-node depends on simraft-core, simraft-kv, and simraft-wire;
+simraft-wire depends on simraft-core; simraft-kv depends on simraft-core;
+simraft-core depends on nothing outside std. proptest and criterion appear
+only as dev-dependencies (property tests and benchmarks). crc32fast appears
+in simraft-wire and simraft-node, sha2 only in simraft-sim, never in the
+core. The core does not serialize at all (section 7), so it never needs a
+checksum or hash crate.
 
 Every production library and binary target carries `#![forbid(unsafe_code)]`
 at the crate root. Workspace lints deny clippy::all, clippy::pedantic,
@@ -115,12 +123,12 @@ docs, and build documentation with RUSTDOCFLAGS set to deny warnings.
 | Module | Contents |
 | --- | --- |
 | rng | SplitMix64 seeding plus xoshiro256starstar stream; the only randomness source |
-| clock | Virtual clock and the deterministic event priority queue |
-| network | Packet queue, directed partition matrix, drop, duplicate, reorder faults |
+| clock | The deterministic event priority queue ordered by tick and insertion sequence |
 | disk | Simulated disk with separate durable and volatile buffers |
-| faults | Seeded fault schedule: partitions, crashes, clock jumps, healing phase |
-| harness | Multi-node driver loop, tick-by-tick oracle invocation |
-| oracle | The five core safety oracles plus commit and dedup checkers |
+| wire | Re-export of simraft-wire, the section 7.1 frame codec: canonical message framing with CRC-32 |
+| faults | Fault configuration: drop, duplicate, and latency rates, directed partition cuts, scripted operations |
+| harness | Multi-node driver loop: packet queue and delivery, disk and fsync scheduling, the client workload, tick-by-tick oracle invocation |
+| oracle | The five core safety oracles plus the structural assertions (monotone commit, applied, and match) |
 | history | Client operation history recording for linearizability |
 | liz | Per-key Wing and Gong linearizability checker with visited-state memoization |
 | trace | Canonical trace lines and the final state digest (sha2) |
@@ -701,8 +709,8 @@ by key: a history over many keys is linearizable if and only if every
 per-key sub-history is, and each per-key model state is a single
 Option<Value>, which keeps the model small and exact. Within a partition
 the search maintains the set of linearized operations as a sorted bitset
-and memoizes visited (linearized_set, model_state) pairs in a BTreeMap;
-a revisited pair is pruned immediately. Pending operations are tried both
+and memoizes visited (linearized set, dropped set, model state) triples
+in a BTreeSet; a revisited triple is pruned immediately. Pending operations are tried both
 ways, linearized at a legal point or dropped, matching the standard
 treatment of incomplete histories. Results are three-valued: Linearizable,
 NotLinearizable (with the key and a minimal offending prefix), or Unknown
@@ -860,7 +868,7 @@ Status at the M4 gate: M4 is implemented as described, which
 completes the milestone map. The simulator of section 12 runs the
 driver loop with the five oracles and the structural assertions
 checked after every event, and the Wing and Gong checker of
-section 13 judges the recorded client history at the end of every
+section 12.6 judges the recorded client history at the end of every
 run. Four as-built notes. First, phase budgets measure from their
 own starts: the healing budget runs from the tick the chaos phase
 ends, and a clock jump consumes budget like any other passage of

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["simraft-core", "simraft-kv", "simraft-sim", "simraft-node"]
+members = ["simraft-core", "simraft-kv", "simraft-sim", "simraft-node", "simraft-wire"]
 
 [workspace.package]
 edition = "2024"
