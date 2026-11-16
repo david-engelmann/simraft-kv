@@ -98,7 +98,7 @@ LAT latency and resource bounds, DET determinism, ERR diagnostics.
 | L-03 | Step allocation budget (LAT): Node::step allocates within a measured per-event-class budget (AppendEntries handling may allocate proportional to the batch it accepts; Tick, vote, and response handling allocate at most a small constant number of allocations, verified with a counting allocator). | Benchmark `simraft-core/benches/step_allocations.rs` using a thread-local counting allocator in the bench harness; budgets are recorded in the bench file and a regression fails CI's `cargo bench --workspace -- --test` job. | M4 |
 | L-04 | Checker tractability (LAT): the per-key linearizability checker decides histories of 10,000 operations over up to 64 keys within the CI step budget, by partitioning and visited-state memoization. Unpartitioned whole-history checking is never used on multi-key histories. | Benchmark `simraft-sim/benches/checker_scale.rs` with a generated 10,000-operation history; the benchmark records visited-state counts so a memoization regression shows as state explosion, not just wall time. | M4 |
 | B-01 | Replication throughput baseline (LAT): criterion benchmarks report AppendEntries replication throughput in entries per second and step latency per event class, with inputs and outputs wrapped in black_box and Throughput::Elements or Throughput::Bytes configured per group. Numbers land in the README only from a recorded run, never estimated. | `simraft-core/benches/replication.rs` and `simraft-sim/benches/` suites; CI runs `cargo bench --workspace -- --test` on every PR. | M4 |
-| E-01 | Diagnostic errors (ERR): every domain error (ConfigError, DecodeError, ProtocolError, SnapshotError) carries its specified context fields (offsets, indexes, terms, expected versus actual values), and Display output includes them. No error presented to a caller is a bare variant name. | Unit tests per error type, for example `simraft-core/tests/error_context.rs::config_error_names_both_timeout_values`, `::decode_error_names_offset_and_lengths`, `::snapshot_error_names_expected_and_received_offsets`, and `simraft-kv/tests/property_dedup.rs::apply_gap_and_replay_are_reported` for KvError. | M1 onward |
+| E-01 | Diagnostic errors (ERR): every domain error (ConfigError, DecodeError, ProtocolError, SnapshotError) carries its specified context fields (offsets, indexes, terms, expected versus actual values), and Display output includes them. No error presented to a caller is a bare variant name. | Unit tests per error type, for example `simraft-core/tests/error_context.rs::config_error_names_both_timeout_values`, `::membership_rejections_name_the_deciding_values`, `::snapshot_rejection_names_identity_and_offsets`, `simraft-kv/tests/command_codec.rs::truncated_payload_names_field_and_offset` for DecodeError, and `simraft-kv/tests/property_dedup.rs::apply_gap_and_replay_are_reported` for KvError. | M1 onward |
 
 ## 9. Adversarial edge case register
 
@@ -168,7 +168,7 @@ N-04, and N-05; the kv codec suites enforce N-03
 (tamper_snapshot, property_snapshot_kv). The N-05 structural half
 and the M-05 oracle half stay with the M4 simulator work their
 rows name. Membership and snapshot error context joins E-01 in
-error_context. 57 tests pass across the workspace.
+error_context. 56 tests pass across the workspace.
 
 Status at the M2 gate: property_commit enforces S-05 and S-06;
 property_readindex enforces R-01, R-02, and R-03 with the
