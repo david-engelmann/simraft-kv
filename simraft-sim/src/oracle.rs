@@ -268,12 +268,10 @@ fn leader_completeness(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
             // the base are checked against the log itself. Without
             // this, a leader that compacts past a committed entry
             // reads as missing it.
-            let present = if *index < view.base_index {
-                true
-            } else if *index == view.base_index {
-                view.base_term == *term
-            } else {
-                view.term_at(*index) == Some(*term)
+            let present = match (*index).cmp(&view.base_index) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Equal => view.base_term == *term,
+                std::cmp::Ordering::Greater => view.term_at(*index) == Some(*term),
             };
             if !present {
                 return Err(OracleViolation {
