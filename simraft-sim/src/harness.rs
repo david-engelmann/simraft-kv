@@ -1266,9 +1266,19 @@ impl<'a> Driver<'a> {
         if la.term_at(shared) != lb.term_at(shared) {
             return false;
         }
-        let ea = &la.entries()[(shared.0 - la.base_index().0) as usize..];
-        let eb = &lb.entries()[(shared.0 - lb.base_index().0) as usize..];
-        ea == eb
+        let ea = la
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| la.base_index().0 + 1 + *i as u64 > shared.0)
+            .map(|(_, e)| e);
+        let eb = lb
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| lb.base_index().0 + 1 + *i as u64 > shared.0)
+            .map(|(_, e)| e);
+        ea.eq(eb)
     }
 
     fn state_digest_node(sim: &NodeSim) -> String {
