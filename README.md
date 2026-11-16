@@ -122,6 +122,9 @@ history is sequential per key. Reproduce with
   test, oracle, or benchmark that enforces it.
 - `DECISIONS.md` records the founding choices for the project and
   where each one came from.
+- `docs/ROADMAP.md` is the post-M4 plan: a real I/O adapter first,
+  then a ruder simulator, measured performance work, and
+  operability, in that order and for stated reasons.
 
 ## License
 
