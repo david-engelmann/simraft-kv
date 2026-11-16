@@ -30,6 +30,14 @@ fn partition_during_snapshot_transfer_still_converges() {
     };
     let report = Harness::new(config).run();
     assert!(
+        report
+            .trace
+            .lines()
+            .iter()
+            .any(|line| line.contains("snapshot_received n3")),
+        "node 3 must actually receive a snapshot (H-08 evidence), not merely catch up by appends"
+    );
+    assert!(
         report.passed(),
         "the follower must install the snapshot after the heal and converge"
     );

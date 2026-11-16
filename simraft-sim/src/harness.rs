@@ -726,6 +726,21 @@ impl<'a> Driver<'a> {
                     result,
                 } => self.handle_client_response(client_id, seq, &result),
                 Action::PersistSnapshot { meta, data } => {
+                    // A persist whose boundary lies past the end
+                    // of the node's own log is a received snapshot:
+                    // the node could not have compacted entries it
+                    // never held. Traced as the scenarios' H-08
+                    // evidence that a transfer really happened.
+                    if self
+                        .nodes
+                        .get(&id)
+                        .is_some_and(|sim| sim.node.log().last_index() < meta.last_included_index)
+                    {
+                        self.trace.push(
+                            self.now,
+                            &format!("snapshot_received {id} upto {}", meta.last_included_index.0),
+                        );
+                    }
                     let epoch = {
                         let sim = self.nodes.get_mut(&id).expect("action source exists");
                         sim.disk.write_snapshot(meta, data);

@@ -1,5 +1,5 @@
 //! Snapshot property tests (docs/ARCHITECTURE.md section 7.4,
-//! invariants N-01, N-02, N-04, N-05 in docs/INVARIANTS.md).
+//! invariants N-01, N-02, N-04, N-05, N-06 in docs/INVARIANTS.md).
 //!
 //! Chunked `InstallSnapshot`: automatic fallback at the base
 //! boundary, strictly sequential chunk offsets, snapshot identity
@@ -305,5 +305,68 @@ fn compaction_never_touches_committed_or_uncommitted_boundary() {
         leader.log().last_index(),
         LogIndex(5),
         "the uncommitted tail survives compaction"
+    );
+}
+
+#[test]
+fn a_completed_unacknowledged_relay_restarts_from_offset_zero() {
+    let cfg = all_voters(&[1, 2, 3]);
+    let mut leader = node(1, &cfg, 7);
+    elect(&mut leader, &[NodeId(2), NodeId(3)]);
+    leader.step(Event::Persisted {
+        kind: PersistKind::Entries,
+        up_to_index: LogIndex(1),
+    });
+    let term = leader.current_term();
+    for seq in 1..=3_u64 {
+        leader.step(Event::Propose {
+            client_id: ClientId(1),
+            seq,
+            payload: vec![u8::try_from(seq).unwrap_or(0)],
+        });
+        leader.step(Event::Persisted {
+            kind: PersistKind::Entries,
+            up_to_index: leader.log().last_index(),
+        });
+    }
+    leader.step(append_response(2, term, 4));
+    assert_eq!(leader.commit_index(), LogIndex(4));
+    let snap = meta(4, term.0, &cfg);
+    leader.step(Event::SnapshotLoaded {
+        meta: snap.clone(),
+        data: vec![9; 32],
+    });
+    leader.step(Event::SnapshotPersisted { meta: snap });
+    assert_eq!(leader.log().base_index(), LogIndex(4));
+
+    let sends_to_three = |actions: &[Action]| -> Vec<(u64, usize, bool)> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Send {
+                    to,
+                    msg:
+                        Message::InstallSnapshot {
+                            offset, data, done, ..
+                        },
+                } if *to == NodeId(3) => Some((*offset, data.len(), *done)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // The first send carries the whole snapshot in one chunk.
+    let first = leader.step(Event::Tick { now: 2_000_000 });
+    assert_eq!(sends_to_three(&first), vec![(0, 32, true)]);
+
+    // Node 3 never answers (every chunk was lost, for example
+    // across a partition). The next send must restart the relay
+    // from offset 0 with the full chunk, not resend an empty
+    // tail chunk at offset 32 forever (N-06).
+    let second = leader.step(Event::Tick { now: 2_001_000 });
+    assert_eq!(
+        sends_to_three(&second),
+        vec![(0, 32, true)],
+        "N-06: an unacknowledged completed relay restarts from offset 0"
     );
 }

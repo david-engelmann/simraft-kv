@@ -873,6 +873,13 @@ impl Node {
     /// Send the next `InstallSnapshot` chunk to `peer`, or ask the
     /// driver to load the base snapshot when its bytes are not in
     /// memory (docs/ARCHITECTURE.md section 9, snapshot relay).
+    ///
+    /// A relay that was sent in full but never answered (the
+    /// peer's `InstallSnapshotResponse` clears the relay state)
+    /// restarts from offset 0 on the next send: the peer may
+    /// have missed every chunk, for example across a partition,
+    /// and resending only the empty tail chunk would wedge it
+    /// until the next compaction (invariant N-06).
     fn send_snapshot_chunk(&mut self, peer: NodeId, out: &mut Vec<Action>) {
         let meta = self.base_meta();
         let Some(loaded) = &self.loaded_snapshot else {
@@ -890,7 +897,10 @@ impl Node {
         };
         let offset = match prog.snapshot {
             Some((index, term, next_offset))
-                if index == meta.last_included_index && term == meta.last_included_term =>
+                if index == meta.last_included_index
+                    && term == meta.last_included_term
+                    && next_offset > 0
+                    && next_offset < loaded.data.len() as u64 =>
             {
                 next_offset
             }

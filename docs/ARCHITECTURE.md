@@ -489,7 +489,11 @@ retains the matching log prefix if its log contains an entry at
 last_included_index with last_included_term, and discards its entire log
 otherwise, then sets its base to the snapshot meta. The leader switches a
 follower to InstallSnapshot automatically whenever next_index is at or
-below the leader's snapshot base index (INVARIANT N-01).
+below the leader's snapshot base index (INVARIANT N-01). A relay that
+was sent in full but never answered restarts from offset 0 on the next
+send, so a follower that missed every chunk across a partition is
+caught up by the current snapshot instead of waiting for the next
+compaction to change the snapshot identity (INVARIANT N-06).
 
 ### 7.5 Digests and domain separation
 
