@@ -1250,6 +1250,27 @@ impl<'a> Driver<'a> {
         digest_hex(&bytes)
     }
 
+    /// Whether two nodes hold the same logical log, allowing
+    /// different snapshot bases: compaction timing is node local,
+    /// so at the end of a run one node may hold entries another
+    /// node has already folded into its snapshot. The logs agree
+    /// when the last indexes match, the term at the higher base
+    /// matches on both sides, and every entry above the higher
+    /// base is identical.
+    fn same_log(a: &NodeSim, b: &NodeSim) -> bool {
+        let (la, lb) = (a.node.log(), b.node.log());
+        if la.last_index() != lb.last_index() {
+            return false;
+        }
+        let shared = la.base_index().max(lb.base_index());
+        if la.term_at(shared) != lb.term_at(shared) {
+            return false;
+        }
+        let ea = &la.entries()[(shared.0 - la.base_index().0) as usize..];
+        let eb = &lb.entries()[(shared.0 - lb.base_index().0) as usize..];
+        ea == eb
+    }
+
     fn state_digest_node(sim: &NodeSim) -> String {
         let applied = sim.node.last_applied();
         let term = sim
@@ -1290,7 +1311,7 @@ impl<'a> Driver<'a> {
                         .collect();
                     !members.is_empty()
                         && members.iter().all(|n| {
-                            Self::log_digest(n) == Self::log_digest(members[0])
+                            Self::same_log(n, members[0])
                                 && Self::state_digest_node(n) == Self::state_digest_node(members[0])
                         })
                 });

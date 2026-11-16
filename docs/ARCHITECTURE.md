@@ -912,7 +912,11 @@ differ. Fourth, the leader append-only oracle binds within one
 leadership tenure: entries from an earlier tenure carry no
 guarantee, because as a follower the node may have them
 overwritten by the current leader (the seed sweep found this on
-seed 912). The CLI emits its JSON run summaries directly; the
+seed 912). Fifth, convergence compares logs semantically rather
+than by digest: nodes compact on their own schedules, so equal
+logs may end a run with different snapshot bases, and the check
+requires the same last index, a matching term at the higher
+base, and identical entries above it. The CLI emits its JSON run summaries directly; the
 only external crates in simraft-sim are clap, crc32fast, and
 sha2, as section 3 provides.
 
