@@ -1,3 +1,8 @@
+#![allow(
+    missing_docs,
+    reason = "the criterion_group macro generates the bench entry point, which cannot carry a doc comment"
+)]
+
 //! Step allocation budget (invariant L-03): `Node::step`
 //! allocates within a measured per-event-class budget, verified
 //! with a counting allocator in this bench harness. Tick, vote,

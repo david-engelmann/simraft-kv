@@ -1,4 +1,9 @@
-//! Replication throughput baseline (invariant B-01): AppendEntries
+#![allow(
+    missing_docs,
+    reason = "the criterion_group macro generates the bench entry point, which cannot carry a doc comment"
+)]
+
+//! Replication throughput baseline (invariant B-01): `AppendEntries`
 //! replication throughput in entries per second and step latency
 //! per event class, measured with criterion over a three-node
 //! cluster driven directly (no network model). Inputs and outputs

@@ -1,5 +1,10 @@
-//! ReadIndex cost bound (invariant L-01): a ReadIndex read costs
-//! at most one heartbeat round of messages (one AppendEntries and
+#![allow(
+    missing_docs,
+    reason = "the criterion_group macro generates the bench entry point, which cannot carry a doc comment"
+)]
+
+//! `ReadIndex` cost bound (invariant L-01): a `ReadIndex` read costs
+//! at most one heartbeat round of messages (one `AppendEntries` and
 //! one response per config member) and zero log appends and zero
 //! persists on the leader. Measured, not assumed: this bench
 //! drives a three-node cluster through one read and counts the

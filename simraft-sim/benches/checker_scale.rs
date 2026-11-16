@@ -1,3 +1,8 @@
+#![allow(
+    missing_docs,
+    reason = "the criterion_group macro generates the bench entry point, which cannot carry a doc comment"
+)]
+
 //! Checker tractability (invariant L-04): the per-key
 //! linearizability checker decides a 10,000-operation history
 //! over 64 keys within the CI step budget, by partitioning and
@@ -48,17 +53,19 @@ fn generated_history() -> History {
 
 fn bench_checker_scale(c: &mut Criterion) {
     let history = generated_history();
-    let mut group = c.benchmark_group("checker_scale");
-    group.sample_size(10);
-    group.bench_function("ten_thousand_ops_sixty_four_keys", |b| {
-        b.iter(|| {
-            let mut checker = Checker::default();
-            let verdict = checker.check(black_box(history.records()));
-            assert_eq!(verdict, Verdict::Linearizable);
-            black_box(checker.visited_states)
+    {
+        let mut group = c.benchmark_group("checker_scale");
+        group.sample_size(10);
+        group.bench_function("ten_thousand_ops_sixty_four_keys", |b| {
+            b.iter(|| {
+                let mut checker = Checker::default();
+                let verdict = checker.check(black_box(history.records()));
+                assert_eq!(verdict, Verdict::Linearizable);
+                black_box(checker.visited_states)
+            });
         });
-    });
-    group.finish();
+        group.finish();
+    }
 
     // Record the visited-state count once, outside the timed loop.
     let mut checker = Checker::default();
