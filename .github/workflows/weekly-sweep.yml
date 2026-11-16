@@ -22,7 +22,7 @@ env:
 
 jobs:
   sweep:
-    name: Seeds ${{ matrix.base }}..${{ matrix.base + 10000 }}
+    name: Seeds from ${{ matrix.base }}
     runs-on: ubuntu-latest
     timeout-minutes: 300
     strategy:
