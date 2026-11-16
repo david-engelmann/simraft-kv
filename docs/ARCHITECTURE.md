@@ -663,6 +663,11 @@ real wire codec, not structured shortcuts. Faults, all seeded:
   delivery A to B independently of B to A. The chaos matrix exercises
   one-way cuts (A->B only), chains (A->B, B->C, A cut from C both ways),
   and full isolation of one node, then heals all of them.
+- Corruption (post-M4 Lane 2): with configured probability, one seeded
+  bit of a packet's encoded frame flips before delivery. The receiver's
+  frame checks (magic, length, CRC-32) reject the packet, so at the
+  protocol level corruption is indistinguishable from loss; the fault
+  exists to exercise the rejection path end to end (INVARIANT H-04).
 
 ### 12.3 Disk model
 
@@ -675,6 +680,18 @@ Event::Restored carrying only durable state. This models the real failure
 that matters: a node that answered as if it had persisted, then lost the
 write. The core's persist-before-response rule (INVARIANT T-02) is the
 defense, and the crash-during-append seeds are its test.
+
+The durable log is stored as section 7.3 log records (the same byte
+format the simraft-node file store writes), not as structured entries.
+Restoring decodes the records in index order and stops at the first bad
+record (bad magic, bad length, checksum mismatch, index out of
+sequence): that record and everything after it is a torn tail, dropped
+and reported with its byte offset, index, and expected versus actual
+CRC. A scenario can flip one byte in a chosen durable record or in the
+durable snapshot payload (post-M4 Lane 2). A corrupt snapshot payload
+fails its SHA-256 at restore and is rejected whole: the node replays
+its log instead, and its log base never advances over state the state
+machine does not hold (INVARIANTS H-05 and H-06).
 
 ### 12.4 Phases: chaos, then bounded healing
 

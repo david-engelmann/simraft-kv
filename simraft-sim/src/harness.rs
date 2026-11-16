@@ -490,17 +490,27 @@ impl<'a> Driver<'a> {
     }
 
     fn restart_node(&mut self, id: NodeId) {
-        let (hard, entries, snapshot) = {
+        let (hard, restore, snapshot) = {
             let sim = self.nodes.get(&id).expect("restart targets a node");
             (
                 sim.disk.durable_hard().unwrap_or(HardState {
                     current_term: Term::ZERO,
                     voted_for: None,
                 }),
-                sim.disk.durable_entries().to_vec(),
+                sim.disk.restore_log(),
                 sim.disk.durable_snapshot().cloned(),
             )
         };
+        if let Some(torn) = &restore.torn {
+            self.trace.push(
+                self.now,
+                &format!(
+                    "log_truncated {id} index {} expected {:08x} actual {:08x}",
+                    torn.index.0, torn.expected_crc, torn.actual_crc
+                ),
+            );
+        }
+        let entries = restore.entries;
         let mut node = Node::new(
             id,
             self.config.core.clone(),
@@ -514,16 +524,25 @@ impl<'a> Driver<'a> {
             entries,
         });
         if let Some((meta, data)) = snapshot {
+            // A snapshot whose payload fails its checksum is
+            // rejected whole (post-M4 Lane 2, invariant H-06):
+            // neither the machine install nor the core's snapshot
+            // steps happen, so the log replayed above stands and
+            // the node's base never advances over state its
+            // machine does not hold.
             if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
                 machine.install_snapshot(parts);
+                let mut more = node.step(Event::SnapshotLoaded {
+                    meta: meta.clone(),
+                    data,
+                });
+                actions.append(&mut more);
+                let mut more = node.step(Event::SnapshotPersisted { meta });
+                actions.append(&mut more);
+            } else {
+                self.trace
+                    .push(self.now, &format!("snapshot_rejected {id}"));
             }
-            let mut more = node.step(Event::SnapshotLoaded {
-                meta: meta.clone(),
-                data,
-            });
-            actions.append(&mut more);
-            let mut more = node.step(Event::SnapshotPersisted { meta });
-            actions.append(&mut more);
         }
         {
             let sim = self.nodes.get_mut(&id).expect("restart targets a node");
@@ -609,12 +628,26 @@ impl<'a> Driver<'a> {
                 );
             }
             FsyncKind::Snapshot => {
-                let meta = {
+                let snapshot = {
                     let sim = self.nodes.get_mut(&id).expect("fsync targets a node");
                     sim.disk.fsync_snapshot();
-                    sim.disk.durable_snapshot().map(|(meta, _)| meta.clone())
+                    sim.disk.durable_snapshot().cloned()
                 };
-                if let Some(meta) = meta {
+                if let Some((meta, data)) = snapshot {
+                    // This fsync completes a received snapshot's
+                    // persist (the core's PersistSnapshot action is
+                    // emitted only for installs from a peer). The
+                    // payload enters the state machine here, paired
+                    // with the cursor jump the core makes on
+                    // SnapshotPersisted: without the install the
+                    // machine would silently miss the snapshotted
+                    // state while the core applies past it
+                    // (post-M4 Lane 2, invariant H-08).
+                    if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
+                        if let Some(sim) = self.nodes.get_mut(&id) {
+                            sim.machine.install_snapshot(parts);
+                        }
+                    }
                     self.step_node(id, Event::SnapshotPersisted { meta });
                 }
             }
@@ -748,7 +781,29 @@ impl<'a> Driver<'a> {
         } else {
             1
         };
-        let frame = encode_frame(from, to, msg);
+        let mut frame = encode_frame(from, to, msg);
+        // Frame corruption (post-M4 Lane 2, invariant H-04): one
+        // seeded bit flips in the encoded frame. The draw sits in
+        // a fixed position in the send path's call order (after
+        // the latency draw, before the duplication draw) so a
+        // seed replays identically. The receiver's frame checks
+        // reject the result exactly as they reject a truncated or
+        // foreign frame, so corruption is indistinguishable from
+        // loss at the protocol level.
+        if chaos
+            && self.config.faults.corrupt_per_mille > 0
+            && self.rng.per_mille(self.config.faults.corrupt_per_mille)
+        {
+            let byte = usize::try_from(
+                self.rng
+                    .next_below(u64::try_from(frame.len()).unwrap_or(u64::MAX)),
+            )
+            .unwrap_or(0);
+            let bit = u8::try_from(self.rng.next_below(8)).unwrap_or(0);
+            frame[byte] ^= 1u8 << bit;
+            self.trace
+                .push(now, &format!("frame_corrupted {from}->{to}"));
+        }
         self.queue.push(
             now + latency,
             SimEvent::Deliver {
