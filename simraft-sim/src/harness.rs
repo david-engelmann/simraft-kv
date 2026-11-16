@@ -171,7 +171,7 @@ const QUIESCE_TICKS: u64 = 300;
 /// The per-machine client session capacity (the dedup table bound).
 const SESSION_CAPACITY: usize = 1_024;
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 enum FsyncKind {
     Hard,
     Entries,
@@ -329,10 +329,7 @@ impl<'a> Driver<'a> {
         self.queue.push(CLIENT_INTERVAL, SimEvent::DriveClients);
         let mut oracle_failure: Option<OracleViolation> = None;
         let mut completed = false;
-        loop {
-            let Some((tick, event)) = self.queue.pop() else {
-                break;
-            };
+        while let Some((tick, event)) = self.queue.pop() {
             if tick > self.now {
                 self.advance_clock(tick);
             }
@@ -366,7 +363,7 @@ impl<'a> Driver<'a> {
         self.nodes.keys().copied().collect()
     }
 
-    fn in_chaos(&self) -> bool {
+    const fn in_chaos(&self) -> bool {
         self.now < self.chaos_end
     }
 
@@ -919,7 +916,7 @@ impl<'a> Driver<'a> {
                 && commit.0 - log.base_index().0 >= COMPACT_THRESHOLD
                 && sim.node.last_applied() >= commit
             {
-                let term = log.term_at(commit).unwrap_or(log.base_term());
+                let term = log.term_at(commit).unwrap_or_else(|| log.base_term());
                 let parts = sim.machine.snapshot_parts(commit, term, sim.node.cluster());
                 Some((
                     SnapshotMeta {
@@ -1033,7 +1030,9 @@ impl<'a> Driver<'a> {
         if alive.is_empty() {
             None
         } else {
-            Some(alive[self.rng.next_below(alive.len() as u64) as usize])
+            let bound = u64::try_from(alive.len()).unwrap_or(u64::MAX);
+            let pick = usize::try_from(self.rng.next_below(bound)).unwrap_or(0);
+            Some(alive[pick])
         }
     }
 
@@ -1128,7 +1127,7 @@ impl<'a> Driver<'a> {
             .node
             .log()
             .term_at(applied)
-            .unwrap_or(sim.node.log().base_term());
+            .unwrap_or_else(|| sim.node.log().base_term());
         let parts = sim
             .machine
             .snapshot_parts(applied, term, sim.node.cluster());
@@ -1136,13 +1135,36 @@ impl<'a> Driver<'a> {
     }
 
     fn finish(&mut self, oracle_failure: Option<OracleViolation>, completed: bool) -> RunReport {
-        let alive: Vec<&NodeSim> = self.nodes.values().filter(|n| n.alive).collect();
+        // Convergence is a property of the cluster: the members
+        // of the final configuration must share one log and one
+        // state. The member set comes from the most current alive
+        // view (highest commit, then highest term). A node removed
+        // from the configuration is no longer part of the cluster;
+        // its frozen log and state are expected to differ, and it
+        // is excluded.
+        let alive: Vec<(NodeId, &NodeSim)> = self
+            .nodes
+            .iter()
+            .filter(|(_, n)| n.alive)
+            .map(|(id, n)| (*id, n))
+            .collect();
         let converged = oracle_failure.is_none()
-            && !alive.is_empty()
-            && alive.iter().all(|n| {
-                Self::log_digest(n) == Self::log_digest(alive[0])
-                    && Self::state_digest_node(n) == Self::state_digest_node(alive[0])
-            });
+            && alive
+                .iter()
+                .max_by_key(|(_, n)| (n.node.commit_index(), n.node.current_term()))
+                .is_some_and(|(_, view)| {
+                    let config = view.node.cluster();
+                    let members: Vec<&NodeSim> = alive
+                        .iter()
+                        .filter(|(id, _)| config.is_voter(*id) || config.learners.contains(id))
+                        .map(|(_, n)| *n)
+                        .collect();
+                    !members.is_empty()
+                        && members.iter().all(|n| {
+                            Self::log_digest(n) == Self::log_digest(members[0])
+                                && Self::state_digest_node(n) == Self::state_digest_node(members[0])
+                        })
+                });
         let mut digest_bytes = Vec::new();
         for (id, sim) in &self.nodes {
             digest_bytes.extend_from_slice(&id.0.to_le_bytes());

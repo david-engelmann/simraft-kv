@@ -214,7 +214,7 @@ fn log_matching(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
                 if diverged_at.is_none() && a.entry_at(index) != b.entry_at(index) {
                     diverged_at = Some(index);
                 }
-                if diverged_at.is_some()
+                if let Some(diverged) = diverged_at
                     && a.term_at(index).is_some()
                     && a.term_at(index) == b.term_at(index)
                 {
@@ -222,10 +222,7 @@ fn log_matching(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
                         oracle: "log_matching",
                         detail: format!(
                             "logs of {} and {} share term at {} but diverged at {}",
-                            a.id,
-                            b.id,
-                            index,
-                            diverged_at.expect("set above")
+                            a.id, b.id, index, diverged
                         ),
                     });
                 }
