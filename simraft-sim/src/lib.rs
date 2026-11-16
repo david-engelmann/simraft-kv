@@ -21,7 +21,11 @@ pub mod liz;
 pub mod oracle;
 pub mod rng;
 pub mod trace;
-pub mod wire;
+
+/// The section 7.1 frame codec lives in simraft-wire, shared
+/// with the simraft-node adapter; it is re-exported here under
+/// its original module path.
+pub use simraft_wire as wire;
 
 /// The version of the simulator trace format emitted by this crate.
 pub const TRACE_FORMAT_VERSION: u16 = 1;

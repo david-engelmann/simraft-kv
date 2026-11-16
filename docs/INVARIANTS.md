@@ -207,7 +207,16 @@ the Figure 8 counting rule ahead of its M2 suite (S-06 enforcement
 lands at M2 as scheduled). Rows for later milestones are unenforced
 until their milestone lands.
 
-## 10. How to read this matrix at a milestone gate
+## 10. Adapter (simraft-node, post-M4 Lane 1)
+
+| ID | Invariant (one line, class) | Enforced by | Milestone |
+| --- | --- | --- | --- |
+| A-01 | Acknowledged-write durability (SAF): a write the client saw acknowledged survives killing and restarting any single node, including the leader, and the cluster keeps serving afterwards. | `simraft-node/tests/cluster_end_to_end.rs::writes_survive_leader_restart`. | Lane 1 |
+| A-02 | Failover read freshness (LIN): after a leader is killed and a successor elected, a read through any surviving member returns the latest committed value, never an older one. | `simraft-node/tests/cluster_end_to_end.rs::read_after_failover_returns_latest_committed`. | Lane 1 |
+| A-03 | Restart recovery (LIV): a node restarted after falling behind rejoins, catches up, and serves the current state through its own address. | `simraft-node/tests/cluster_end_to_end.rs::restarted_node_catches_up`. | Lane 1 |
+| A-04 | Wire compatibility (INT): the adapter's peer transport carries section 7.1 frames byte for byte; a frame split at any byte boundary reassembles and decodes to exactly the encoded message. | `simraft-node/tests/frame_compat.rs::frames_reassemble_at_any_split` and `::back_to_back_frames_come_out_in_order`. | Lane 1 |
+
+## 11. How to read this matrix at a milestone gate
 
 For each milestone, the rows whose Milestone column names it (or an earlier
 milestone not yet landed) must have their named tests present, running, and
