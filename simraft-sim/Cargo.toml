@@ -17,5 +17,8 @@ crc32fast = "1"
 serde_json = "1"
 sha2 = "0.10"
 
+[dev-dependencies]
+criterion = "0.5"
+
 [lints]
 workspace = true

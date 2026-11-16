@@ -96,7 +96,11 @@ impl std::error::Error for OracleViolation {}
 pub struct OracleState {
     leader_logs: BTreeMap<NodeId, (LogIndex, Term, Vec<LogEntry>)>,
     indexes: BTreeMap<NodeId, (LogIndex, LogIndex)>,
-    matches: BTreeMap<(NodeId, NodeId), LogIndex>,
+    /// Match monotonicity is scoped per leadership: a node's
+    /// progress map legitimately resets when it wins a new term,
+    /// so the recorded high-water marks key on (leader, term,
+    /// peer).
+    matches: BTreeMap<(NodeId, Term, NodeId), LogIndex>,
 }
 
 impl OracleState {
@@ -104,6 +108,16 @@ impl OracleState {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Forget one node's recorded state, when the node crashes:
+    /// the oracles judge within a node lifetime, and cross-lifetime
+    /// safety is carried by election safety, leader completeness,
+    /// and the disk model.
+    pub fn forget_node(&mut self, id: NodeId) {
+        self.leader_logs.remove(&id);
+        self.indexes.remove(&id);
+        self.matches.retain(|(leader, _, _), _| *leader != id);
     }
 
     /// Run every oracle over the current views.
@@ -184,6 +198,8 @@ fn leader_append_only(
 
 /// S-03: if two logs hold an entry at the same index with the same
 /// term, the logs are identical in all entries up to that index.
+/// Checked in one pass per pair: once the logs diverge, no later
+/// index may agree on term again.
 fn log_matching(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
     for a in views {
         for b in views {
@@ -192,24 +208,26 @@ fn log_matching(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
             }
             let shared_base = a.base_index.max(b.base_index);
             let shared_last = a.last_index().min(b.last_index());
+            let mut diverged_at: Option<LogIndex> = None;
             let mut index = LogIndex(shared_base.0 + 1);
             while index <= shared_last {
-                if a.term_at(index) == b.term_at(index) && a.term_at(index).is_some() {
-                    // Terms agree here; every entry from the higher
-                    // base up to here must agree too.
-                    let mut check = LogIndex(shared_base.0 + 1);
-                    while check <= index {
-                        if a.entry_at(check) != b.entry_at(check) {
-                            return Err(OracleViolation {
-                                oracle: "log_matching",
-                                detail: format!(
-                                    "logs of {} and {} share term at {} but differ at {}",
-                                    a.id, b.id, index, check
-                                ),
-                            });
-                        }
-                        check = check.next();
-                    }
+                if diverged_at.is_none() && a.entry_at(index) != b.entry_at(index) {
+                    diverged_at = Some(index);
+                }
+                if diverged_at.is_some()
+                    && a.term_at(index).is_some()
+                    && a.term_at(index) == b.term_at(index)
+                {
+                    return Err(OracleViolation {
+                        oracle: "log_matching",
+                        detail: format!(
+                            "logs of {} and {} share term at {} but diverged at {}",
+                            a.id,
+                            b.id,
+                            index,
+                            diverged_at.expect("set above")
+                        ),
+                    });
                 }
                 index = index.next();
             }
@@ -303,14 +321,14 @@ fn structural(views: &[NodeView<'_>], state: &mut OracleState) -> Result<(), Ora
             .indexes
             .insert(view.id, (view.commit_index, view.last_applied));
         for (peer, match_index) in view.match_indexes {
-            let key = (view.id, *peer);
+            let key = (view.id, view.current_term, *peer);
             if let Some(prev) = state.matches.get(&key) {
                 if match_index < prev {
                     return Err(OracleViolation {
                         oracle: "structural",
                         detail: format!(
-                            "leader {} match for {} decreased: {} -> {}",
-                            view.id, peer, prev, match_index
+                            "leader {} match for {} decreased in {}: {} -> {}",
+                            view.id, peer, view.current_term, prev, match_index
                         ),
                     });
                 }

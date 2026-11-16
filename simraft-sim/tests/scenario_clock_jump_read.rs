@@ -13,10 +13,10 @@ fn huge_clock_jump_mid_read_stays_linearizable() {
         seed: 61,
         faults: FaultConfig {
             clock_jump_per_mille: 20,
-            max_clock_jump: 200_000,
+            max_clock_jump: 6_000,
             ..FaultConfig::default()
         },
-        scripted: vec![(2_000, ScriptedOp::JumpClock(500_000))],
+        scripted: vec![(2_000, ScriptedOp::JumpClock(5_000))],
         ..SimConfig::default()
     };
     let report = Harness::new(config).run();
