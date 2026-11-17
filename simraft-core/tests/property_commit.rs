@@ -112,6 +112,7 @@ fn figure8_old_term_entry_not_committed_by_counting() {
                 payload: b"old".to_vec(),
             },
         }],
+        snapshot: None,
     });
     let _ = common::elect(&mut leader, &[NodeId(2), NodeId(3), NodeId(4)]);
     assert_eq!(leader.current_term(), Term(2));

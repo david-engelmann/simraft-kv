@@ -146,7 +146,7 @@ Event::ReadIndex { request_id: u64, key: Vec<u8> }
 Event::Message { from: NodeId, msg: Message }
 Event::Persisted { kind: PersistKind, up_to_index: LogIndex }
 Event::SnapshotPersisted { meta: SnapshotMeta }
-Event::Restored { hard_state: HardState, entries: Vec<LogEntry> }
+Event::Restored { hard_state: HardState, entries: Vec<LogEntry>, snapshot: Option<SnapshotMeta> }
 ```
 
 As built at M1: the event and action enums carry the variants M1
@@ -684,6 +684,19 @@ Event::Restored carrying only durable state. This models the real failure
 that matters: a node that answered as if it had persisted, then lost the
 write. The core's persist-before-response rule (INVARIANT T-02) is the
 defense, and the crash-during-append seeds are its test.
+
+As built in post-M4 Lane 2: Restored also carries the durable
+snapshot's boundary when the driver holds a verified snapshot,
+and the core installs that boundary over the recovered log
+before the node serves (invariant N-07). Before this, a
+restarted node's base never reflected its snapshot: the live
+install path needs a pending install, and the compaction path
+is bounded by a commit index that starts at zero on restore,
+so neither could fire at boot, and the recovered log prefix
+the snapshot had replaced was replayed as current state. The
+seed sweep found it as log-matching failures on restarted
+nodes whose disks held a snapshot (seed 129 and seven more in
+the first five hundred).
 
 The driver compacts a node's log once its commit index runs sixteen
 entries past its snapshot base: it builds the snapshot from the state

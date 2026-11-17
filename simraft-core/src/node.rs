@@ -300,7 +300,13 @@ impl Node {
             Event::Restored {
                 hard_state,
                 entries,
-            } => self.on_restored(hard_state.current_term, hard_state.voted_for, &entries),
+                snapshot,
+            } => self.on_restored(
+                hard_state.current_term,
+                hard_state.voted_for,
+                &entries,
+                snapshot.as_ref(),
+            ),
         }
         out
     }
@@ -407,7 +413,13 @@ impl Node {
         self.flush_pending(out);
     }
 
-    fn on_restored(&mut self, term: Term, voted_for: Option<NodeId>, entries: &[LogEntry]) {
+    fn on_restored(
+        &mut self,
+        term: Term,
+        voted_for: Option<NodeId>,
+        entries: &[LogEntry],
+        snapshot: Option<&SnapshotMeta>,
+    ) {
         self.current_term = term;
         self.voted_for = voted_for;
         self.log = Log::new();
@@ -431,6 +443,17 @@ impl Node {
         self.incoming_snapshot = None;
         self.loaded_snapshot = None;
         self.recompute_config();
+        // A recovered snapshot installs its boundary over the
+        // recovered log (invariant N-07): the suffix past the
+        // boundary is retained when the boundary term matches
+        // and the whole log is discarded when it does not, the
+        // same rule as a live install (N-04). The commit bound
+        // that guards a live compaction (N-05) does not apply
+        // here: the snapshot is already durable, and the
+        // recovered commit index starts at zero by construction.
+        if let Some(meta) = snapshot {
+            self.install_snapshot(meta);
+        }
         self.entries_durable_up_to = self.log.last_index();
         self.hard_gen_sent += 1;
         self.hard_gen_acked = self.hard_gen_sent;

@@ -1,5 +1,6 @@
 //! Snapshot property tests (docs/ARCHITECTURE.md section 7.4,
-//! invariants N-01, N-02, N-04, N-05, N-06 in docs/INVARIANTS.md).
+//! invariants N-01, N-02, N-04, N-05, N-06, N-07 in
+//! docs/INVARIANTS.md).
 //!
 //! Chunked `InstallSnapshot`: automatic fallback at the base
 //! boundary, strictly sequential chunk offsets, snapshot identity
@@ -207,6 +208,7 @@ fn matching_prefix_retained_divergent_log_discarded() {
                 voted_for: None,
             },
             entries: entries(terms),
+            snapshot: None,
         });
         n
     };
@@ -369,4 +371,62 @@ fn a_completed_unacknowledged_relay_restarts_from_offset_zero() {
         vec![(0, 32, true)],
         "N-06: an unacknowledged completed relay restarts from offset 0"
     );
+}
+
+fn restored_entries(terms: &[u64]) -> Vec<LogEntry> {
+    terms
+        .iter()
+        .map(|&t| LogEntry {
+            term: Term(t),
+            kind: EntryKind::NoOp,
+        })
+        .collect()
+}
+
+#[test]
+fn a_restored_snapshot_installs_its_boundary_over_the_recovered_log() {
+    let cfg = all_voters(&[1, 2, 3]);
+    let mut n = node(2, &cfg, 7);
+    n.step(Event::Restored {
+        hard_state: HardState {
+            current_term: Term(2),
+            voted_for: None,
+        },
+        entries: restored_entries(&[1, 1, 2, 2, 2]),
+        snapshot: Some(meta(3, 2, &cfg)),
+    });
+    assert_eq!(
+        n.log().base_index(),
+        LogIndex(3),
+        "N-07: the boundary installs at restore, though the recovered commit index is zero"
+    );
+    assert_eq!(
+        n.log().last_index(),
+        LogIndex(5),
+        "N-07: the suffix past a matching boundary is retained"
+    );
+    assert_eq!(n.commit_index(), LogIndex(3));
+    assert_eq!(n.last_applied(), LogIndex(3));
+}
+
+#[test]
+fn a_restored_snapshot_with_a_mismatched_boundary_discards_the_recovered_log() {
+    let cfg = all_voters(&[1, 2, 3]);
+    let mut n = node(2, &cfg, 7);
+    n.step(Event::Restored {
+        hard_state: HardState {
+            current_term: Term(2),
+            voted_for: None,
+        },
+        entries: restored_entries(&[1, 1, 1, 1, 1]),
+        snapshot: Some(meta(3, 2, &cfg)),
+    });
+    assert_eq!(n.log().base_index(), LogIndex(3));
+    assert_eq!(
+        n.log().last_index(),
+        LogIndex(3),
+        "N-07: a boundary term mismatch discards the whole recovered log (the N-04 rule)"
+    );
+    assert_eq!(n.commit_index(), LogIndex(3));
+    assert_eq!(n.last_applied(), LogIndex(3));
 }

@@ -519,30 +519,35 @@ impl<'a> Driver<'a> {
         )
         .expect("the run's core config always validates");
         let mut machine = KvStateMachine::new(SESSION_CAPACITY);
-        let mut actions = node.step(Event::Restored {
-            hard_state: hard,
-            entries,
-        });
+        // A durable snapshot whose payload verifies installs
+        // into the machine here, and its boundary installs into
+        // the core through the Restored event itself (invariant
+        // N-07). A payload that fails its checksum is rejected
+        // whole (post-M4 Lane 2, invariant H-06): neither install
+        // happens, so the log replayed below stands and the
+        // node's base never advances over state its machine
+        // does not hold.
+        let mut boot_snapshot: Option<(SnapshotMeta, Vec<u8>)> = None;
         if let Some((meta, data)) = snapshot {
-            // A snapshot whose payload fails its checksum is
-            // rejected whole (post-M4 Lane 2, invariant H-06):
-            // neither the machine install nor the core's snapshot
-            // steps happen, so the log replayed above stands and
-            // the node's base never advances over state its
-            // machine does not hold.
             if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
                 machine.install_snapshot(parts);
-                let mut more = node.step(Event::SnapshotLoaded {
-                    meta: meta.clone(),
-                    data,
-                });
-                actions.append(&mut more);
-                let mut more = node.step(Event::SnapshotPersisted { meta });
-                actions.append(&mut more);
+                boot_snapshot = Some((meta, data));
             } else {
                 self.trace
                     .push(self.now, &format!("snapshot_rejected {id}"));
             }
+        }
+        let mut actions = node.step(Event::Restored {
+            hard_state: hard,
+            entries,
+            snapshot: boot_snapshot.as_ref().map(|(meta, _)| meta.clone()),
+        });
+        if let Some((meta, data)) = boot_snapshot {
+            // Keep the verified bytes loaded so a node that goes
+            // on to lead can relay them without a store round
+            // trip.
+            let mut more = node.step(Event::SnapshotLoaded { meta, data });
+            actions.append(&mut more);
         }
         {
             let sim = self.nodes.get_mut(&id).expect("restart targets a node");
@@ -992,15 +997,25 @@ impl<'a> Driver<'a> {
             match sim.disk.durable_snapshot() {
                 Some((stored, data)) if *stored == meta => Some(data.clone()),
                 _ => {
+                    // Rebuild from the machine only when the
+                    // machine stands exactly at the requested
+                    // boundary: a snapshot parts call labels the
+                    // machine's current state with the requested
+                    // meta, so rebuilding from a machine that has
+                    // applied past the boundary would hand the
+                    // receiver state from its future under an
+                    // older index. In that case the load is
+                    // unmet and the leader retries.
                     let term = sim.node.log().term_at(meta.last_included_index);
-                    term.map(|_| {
-                        let parts = sim.machine.snapshot_parts(
-                            meta.last_included_index,
-                            meta.last_included_term,
-                            sim.node.cluster(),
-                        );
-                        encode_snapshot(&parts)
-                    })
+                    term.filter(|_| sim.node.last_applied() == meta.last_included_index)
+                        .map(|_| {
+                            let parts = sim.machine.snapshot_parts(
+                                meta.last_included_index,
+                                meta.last_included_term,
+                                sim.node.cluster(),
+                            );
+                            encode_snapshot(&parts)
+                        })
                 }
             }
         };

@@ -110,6 +110,7 @@ fn conflict_hint_lands_on_term_boundary() {
             voted_for: None,
         },
         entries: entries_with_terms(&[1, 1, 2, 2]),
+        snapshot: None,
     });
 
     // Leader probes at index 4 claiming term 3: mismatch at term 2.

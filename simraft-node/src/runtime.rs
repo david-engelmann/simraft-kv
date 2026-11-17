@@ -394,21 +394,24 @@ fn boot(
         })?;
     let mut machine = KvStateMachine::new(SESSION_CAPACITY);
     let mut boot_actions = Vec::new();
-    if let Some((meta, data)) = &recovery.snapshot {
+    // The snapshot boundary installs into the core through the
+    // Restored event (invariant N-07); the verified bytes stay
+    // loaded afterwards so this node can relay them if it leads.
+    let boot_snapshot = recovery.snapshot.clone();
+    if let Some((_, data)) = &boot_snapshot {
         let parts = decode_snapshot(data).map_err(|e| NodeError::CorruptStore {
             detail: format!("the durable snapshot payload does not decode: {e}"),
         })?;
         machine.install_snapshot(parts);
-        boot_actions.extend(node.step(Event::SnapshotLoaded {
-            meta: meta.clone(),
-            data: data.clone(),
-        }));
-        boot_actions.extend(node.step(Event::SnapshotPersisted { meta: meta.clone() }));
     }
     boot_actions.extend(node.step(Event::Restored {
         hard_state: recovery.hard_state,
         entries: recovery.entries,
+        snapshot: boot_snapshot.as_ref().map(|(meta, _)| meta.clone()),
     }));
+    if let Some((meta, data)) = boot_snapshot {
+        boot_actions.extend(node.step(Event::SnapshotLoaded { meta, data }));
+    }
     for action in boot_actions {
         match action {
             Action::PersistHardState {
