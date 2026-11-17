@@ -392,7 +392,10 @@ fn a_restored_snapshot_installs_its_boundary_over_the_recovered_log() {
             current_term: Term(2),
             voted_for: None,
         },
-        entries: restored_entries(&[1, 1, 2, 2, 2]),
+        // The store returns only the entries above its
+        // snapshot's boundary (invariant N-08): these two
+        // entries are indexes 4 and 5.
+        entries: restored_entries(&[2, 2]),
         snapshot: Some(meta(3, 2, &cfg)),
     });
     assert_eq!(
@@ -403,14 +406,16 @@ fn a_restored_snapshot_installs_its_boundary_over_the_recovered_log() {
     assert_eq!(
         n.log().last_index(),
         LogIndex(5),
-        "N-07: the suffix past a matching boundary is retained"
+        "N-08: the recovered suffix lands at its absolute indexes above the boundary"
     );
+    assert_eq!(n.log().entries().len(), 2);
+    assert_eq!(n.log().entries()[0].term, Term(2));
     assert_eq!(n.commit_index(), LogIndex(3));
     assert_eq!(n.last_applied(), LogIndex(3));
 }
 
 #[test]
-fn a_restored_snapshot_with_a_mismatched_boundary_discards_the_recovered_log() {
+fn a_restored_snapshot_covering_the_whole_log_restores_an_empty_suffix() {
     let cfg = all_voters(&[1, 2, 3]);
     let mut n = node(2, &cfg, 7);
     n.step(Event::Restored {
@@ -418,14 +423,14 @@ fn a_restored_snapshot_with_a_mismatched_boundary_discards_the_recovered_log() {
             current_term: Term(2),
             voted_for: None,
         },
-        entries: restored_entries(&[1, 1, 1, 1, 1]),
+        entries: Vec::new(),
         snapshot: Some(meta(3, 2, &cfg)),
     });
     assert_eq!(n.log().base_index(), LogIndex(3));
     assert_eq!(
         n.log().last_index(),
         LogIndex(3),
-        "N-07: a boundary term mismatch discards the whole recovered log (the N-04 rule)"
+        "N-07: a snapshot covering the whole recovered log leaves the log at its boundary"
     );
     assert_eq!(n.commit_index(), LogIndex(3));
     assert_eq!(n.last_applied(), LogIndex(3));

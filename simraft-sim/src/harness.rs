@@ -490,16 +490,44 @@ impl<'a> Driver<'a> {
     }
 
     fn restart_node(&mut self, id: NodeId) {
-        let (hard, restore, snapshot) = {
+        let (hard, snapshot) = {
             let sim = self.nodes.get(&id).expect("restart targets a node");
             (
                 sim.disk.durable_hard().unwrap_or(HardState {
                     current_term: Term::ZERO,
                     voted_for: None,
                 }),
-                sim.disk.restore_log(),
                 sim.disk.durable_snapshot().cloned(),
             )
+        };
+        let mut machine = KvStateMachine::new(SESSION_CAPACITY);
+        // A durable snapshot whose payload verifies installs
+        // into the machine here, and its boundary installs into
+        // the core through the Restored event itself (invariant
+        // N-07); the log restore then returns only the entries
+        // above that boundary (invariant N-08). A payload that
+        // fails its checksum is rejected whole (post-M4 Lane 2,
+        // invariant H-06): neither install happens, nothing is
+        // covered, and the whole log replays from index 1, so
+        // the node's base never advances over state its machine
+        // does not hold.
+        let mut boot_snapshot: Option<(SnapshotMeta, Vec<u8>)> = None;
+        if let Some((meta, data)) = snapshot {
+            if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
+                machine.install_snapshot(parts);
+                boot_snapshot = Some((meta, data));
+            } else {
+                self.trace
+                    .push(self.now, &format!("snapshot_rejected {id}"));
+            }
+        }
+        let restore = {
+            let sim = self.nodes.get(&id).expect("restart targets a node");
+            if boot_snapshot.is_some() {
+                sim.disk.restore_log()
+            } else {
+                sim.disk.restore_whole_log()
+            }
         };
         if let Some(torn) = &restore.torn {
             self.trace.push(
@@ -518,25 +546,6 @@ impl<'a> Driver<'a> {
             self.config.seed ^ id.0,
         )
         .expect("the run's core config always validates");
-        let mut machine = KvStateMachine::new(SESSION_CAPACITY);
-        // A durable snapshot whose payload verifies installs
-        // into the machine here, and its boundary installs into
-        // the core through the Restored event itself (invariant
-        // N-07). A payload that fails its checksum is rejected
-        // whole (post-M4 Lane 2, invariant H-06): neither install
-        // happens, so the log replayed below stands and the
-        // node's base never advances over state its machine
-        // does not hold.
-        let mut boot_snapshot: Option<(SnapshotMeta, Vec<u8>)> = None;
-        if let Some((meta, data)) = snapshot {
-            if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
-                machine.install_snapshot(parts);
-                boot_snapshot = Some((meta, data));
-            } else {
-                self.trace
-                    .push(self.now, &format!("snapshot_rejected {id}"));
-            }
-        }
         let mut actions = node.step(Event::Restored {
             hard_state: hard,
             entries,
@@ -622,7 +631,7 @@ impl<'a> Driver<'a> {
                 let up_to = {
                     let sim = self.nodes.get_mut(&id).expect("fsync targets a node");
                     sim.disk.fsync_entries();
-                    LogIndex(sim.disk.durable_entries().len() as u64)
+                    sim.disk.durable_up_to()
                 };
                 self.step_node(
                     id,

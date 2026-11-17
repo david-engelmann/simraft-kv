@@ -114,15 +114,20 @@ pub enum Event {
     Restored {
         /// The recovered hard state.
         hard_state: HardState,
-        /// The recovered durable log entries, in index order.
+        /// The recovered durable log entries above the snapshot
+        /// boundary, in index order: every durable entry when
+        /// `snapshot` is `None`, and only the entries the
+        /// snapshot does not cover when it is present (invariant
+        /// N-08). A store never returns covered entries at
+        /// restore.
         entries: Vec<LogEntry>,
         /// The recovered durable snapshot's boundary, when the
         /// storage layer holds one whose payload the driver has
         /// verified and installed into its state machine. The
-        /// core installs the boundary over the recovered log
-        /// (invariant N-07): without it a restarted node's base
-        /// never reflects its snapshot, and the log prefix the
-        /// snapshot replaced is replayed as if it were current.
+        /// core installs the boundary at restore (invariant
+        /// N-07): without it a restarted node's base never
+        /// reflects its snapshot, and the recovered suffix is
+        /// replayed at the wrong indexes.
         snapshot: Option<SnapshotMeta>,
     },
 }

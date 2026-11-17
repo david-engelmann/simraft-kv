@@ -687,16 +687,34 @@ defense, and the crash-during-append seeds are its test.
 
 As built in post-M4 Lane 2: Restored also carries the durable
 snapshot's boundary when the driver holds a verified snapshot,
-and the core installs that boundary over the recovered log
-before the node serves (invariant N-07). Before this, a
-restarted node's base never reflected its snapshot: the live
-install path needs a pending install, and the compaction path
-is bounded by a commit index that starts at zero on restore,
-so neither could fire at boot, and the recovered log prefix
-the snapshot had replaced was replayed as current state. The
-seed sweep found it as log-matching failures on restarted
-nodes whose disks held a snapshot (seed 129 and seven more in
-the first five hundred).
+and the core installs that boundary at restore before the node
+serves (invariant N-07). Before this, a restarted node's base
+never reflected its snapshot: the live install path needs a
+pending install, and the compaction path is bounded by a
+commit index that starts at zero on restore, so neither could
+fire at boot, and the recovered log prefix the snapshot had
+replaced was replayed as current state. The seed sweep found
+it as log-matching failures on restarted nodes whose disks
+held a snapshot (seed 129 and seven more in the first five
+hundred).
+
+The restore is suffix-shaped (invariant N-08). A store
+returns only the entries its durable snapshot does not cover,
+and the core advances the fresh log's base to the boundary
+before appending them, so every recovered entry lands at its
+absolute index. The simulated disk keeps its durable records
+whole, the same shape as the simraft-node file store's log
+file, but it tracks the boundary as its log base: the
+volatile log holds only entries above the base, the restore
+verifies the covered records and skips them, and a write
+after a snapshot fsync is stored at its own absolute index.
+Before this, the disk wrote entries by position from index 1,
+so the first persist after a snapshot install was shifted
+into the gap the snapshot covered, and a later crash restored
+the shifted bytes as a different log (seeds 137, 138, 291,
+399, 474 in the first five hundred). A rejected snapshot
+payload (H-06) is the one exception: nothing is covered then,
+and the driver restores the whole log from index 1.
 
 The driver compacts a node's log once its commit index runs sixteen
 entries past its snapshot base: it builds the snapshot from the state

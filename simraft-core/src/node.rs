@@ -423,6 +423,16 @@ impl Node {
         self.current_term = term;
         self.voted_for = voted_for;
         self.log = Log::new();
+        // The recovered entries begin above the snapshot
+        // boundary (invariant N-08): a store returns only the
+        // entries its durable snapshot does not cover, so the
+        // fresh log's base advances to the boundary before the
+        // suffix is appended and every recovered entry lands at
+        // its absolute index.
+        if let Some(meta) = snapshot {
+            self.log
+                .advance_base(meta.last_included_index, meta.last_included_term);
+        }
         self.log.append(entries);
         self.role = Role::Follower;
         self.commit_index = LogIndex::ZERO;
@@ -443,14 +453,13 @@ impl Node {
         self.incoming_snapshot = None;
         self.loaded_snapshot = None;
         self.recompute_config();
-        // A recovered snapshot installs its boundary over the
-        // recovered log (invariant N-07): the suffix past the
-        // boundary is retained when the boundary term matches
-        // and the whole log is discarded when it does not, the
-        // same rule as a live install (N-04). The commit bound
-        // that guards a live compaction (N-05) does not apply
-        // here: the snapshot is already durable, and the
-        // recovered commit index starts at zero by construction.
+        // A recovered snapshot installs its boundary at restore
+        // (invariant N-07): the commit and applied cursors jump
+        // to the boundary and the boundary's cluster config
+        // takes over. The commit bound that guards a live
+        // compaction (N-05) does not apply here: the snapshot is
+        // already durable, and the recovered commit index starts
+        // at zero by construction.
         if let Some(meta) = snapshot {
             self.install_snapshot(meta);
         }

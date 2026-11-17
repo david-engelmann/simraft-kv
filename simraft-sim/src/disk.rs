@@ -17,6 +17,18 @@
 //! section 7.3. Post-M4 Lane 2 adds the corruption surface: a
 //! scenario can flip one byte in a durable log record or in the
 //! durable snapshot payload and watch the next restore detect it.
+//!
+//! The disk tracks the durable snapshot's boundary as its log
+//! base. The durable records are never dropped: they are the
+//! node's genuine history, retained whole, exactly as the
+//! simraft-node file store keeps its log file. But the volatile
+//! log holds only the entries above the base, and the restore
+//! verifies the covered records and skips them, returning only
+//! the suffix above the base (invariant N-08). Positions in the
+//! volatile log and in the restore are always aligned to
+//! absolute indexes through the base, so a write that lands
+//! after a snapshot install is stored at its own index, never
+//! shifted into the covered prefix.
 
 use simraft_core::{HardState, LogEntry, LogIndex, SnapshotMeta};
 
@@ -56,7 +68,8 @@ pub struct TornRecord {
 /// prefix as entries, and the torn record that ended it, if any.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogRestore {
-    /// The entries decoded from the valid records, index 1 first.
+    /// The entries decoded from the valid records above the log
+    /// base, in index order (the base plus one first).
     pub entries: Vec<LogEntry>,
     /// The first bad record, when one ended the restore.
     pub torn: Option<TornRecord>,
@@ -68,6 +81,7 @@ pub struct SimDisk {
     durable_hard: Option<HardState>,
     volatile_hard: Option<HardState>,
     durable_log: Vec<u8>,
+    log_base: LogIndex,
     volatile_entries: Vec<LogEntry>,
     durable_snapshot: Option<(SnapshotMeta, Vec<u8>)>,
     volatile_snapshot: Option<(SnapshotMeta, Vec<u8>)>,
@@ -130,6 +144,34 @@ fn record_ends(log: &[u8]) -> Vec<usize> {
     ends
 }
 
+/// The number of complete records at the head of `log` claiming
+/// an index at or below `base`, walking record lengths without
+/// verifying checksums. Records sit in index order, so the walk
+/// stops at the first record above the base or the first
+/// unusable length.
+fn covered_records(log: &[u8], base: LogIndex) -> usize {
+    let mut count = 0usize;
+    let mut offset = 0usize;
+    while offset + HEADER_LEN <= log.len() {
+        let Some(len_bytes) = log[offset + 6..offset + 10].try_into().ok() else {
+            break;
+        };
+        let record_len = u32::from_le_bytes(len_bytes) as usize;
+        if record_len < HEADER_LEN + CRC_LEN || offset + record_len > log.len() {
+            break;
+        }
+        let Some(index_bytes) = log[offset + 10..offset + 18].try_into().ok() else {
+            break;
+        };
+        if u64::from_le_bytes(index_bytes) > base.0 {
+            break;
+        }
+        count += 1;
+        offset += record_len;
+    }
+    count
+}
+
 impl SimDisk {
     /// A blank disk: nothing durable, nothing buffered.
     #[must_use]
@@ -142,11 +184,18 @@ impl SimDisk {
         self.volatile_hard = Some(hard);
     }
 
-    /// Buffer log entries starting at `from_index` (one-based): the
-    /// volatile log is truncated to `from_index - 1` entries and the
-    /// new suffix appended, mirroring a real log rewrite.
+    /// Buffer log entries starting at `from_index`: the volatile
+    /// log, which holds only the entries above the log base, is
+    /// truncated to the entries below `from_index` and the new
+    /// suffix appended, mirroring a real log rewrite.
     pub fn write_entries(&mut self, from_index: LogIndex, entries: &[LogEntry]) {
-        let keep = usize::try_from(from_index.0.saturating_sub(1)).unwrap_or(usize::MAX);
+        let keep = usize::try_from(
+            from_index
+                .0
+                .saturating_sub(1)
+                .saturating_sub(self.log_base.0),
+        )
+        .unwrap_or(usize::MAX);
         self.volatile_entries.truncate(keep);
         self.volatile_entries.extend_from_slice(entries);
     }
@@ -175,10 +224,14 @@ impl SimDisk {
     /// volatile log diverges from the durable records (a
     /// rewritten suffix), or at the first record the restore
     /// cannot read when the volatile log has since been
-    /// truncated back past it.
+    /// truncated back past it. Positions here are above the log
+    /// base: the covered records at the head of the durable log
+    /// are counted, kept byte for byte, and never enter the
+    /// comparison.
     pub fn fsync_entries(&mut self) {
         let restore = self.restore_log();
         let ends = record_ends(&self.durable_log);
+        let covered = covered_records(&self.durable_log, self.log_base);
         // Length of the agreeing prefix between the restored
         // durable entries and the volatile log.
         let mut keep = 0usize;
@@ -189,13 +242,13 @@ impl SimDisk {
             keep += 1;
         }
         if restore.torn.is_some() && keep == restore.entries.len() {
-            if self.volatile_entries.len() >= ends.len() {
+            if covered + self.volatile_entries.len() >= ends.len() {
                 // The volatile log still covers every durable
                 // record: nothing already durable is rewritten,
                 // so the torn record and everything after it
                 // stay exactly as they are on the disk, and any
                 // newer entries append past them.
-                keep = ends.len();
+                keep = ends.len() - covered;
             } else if self.volatile_entries.len() > restore.entries.len() {
                 // The volatile log was rewritten from the torn
                 // position onward; the torn record is replaced.
@@ -204,22 +257,41 @@ impl SimDisk {
                 keep = self.volatile_entries.len();
             }
         }
-        let mut bytes = if keep == 0 {
+        let mut bytes = if covered + keep == 0 {
             Vec::new()
         } else {
-            let cut = ends.get(keep - 1).copied().unwrap_or(0);
+            let cut = ends.get(covered + keep - 1).copied().unwrap_or(0);
             self.durable_log[..cut].to_vec()
         };
         for (position, entry) in self.volatile_entries.iter().enumerate().skip(keep) {
-            let index = LogIndex(u64::try_from(position + 1).unwrap_or(u64::MAX));
+            let offset = u64::try_from(position + 1).unwrap_or(u64::MAX);
+            let index = LogIndex(self.log_base.0 + offset);
             bytes.extend_from_slice(&encode_log_record(index, entry));
         }
         self.durable_log = bytes;
     }
 
     /// Make the buffered snapshot durable.
+    ///
+    /// The snapshot covers the log through its boundary, so the
+    /// log base advances to the boundary (invariant N-08): the
+    /// volatile entries at or below it are dropped, and every
+    /// later write, fsync, and restore aligns positions to
+    /// absolute indexes through the new base. The durable
+    /// records are kept whole; the restore verifies and skips
+    /// the covered prefix. This runs in the same fsync step
+    /// that steps `SnapshotPersisted` in the core, so the
+    /// disk's base and the core's base jump together.
     pub fn fsync_snapshot(&mut self) {
         if let Some(snapshot) = self.volatile_snapshot.take() {
+            let boundary = snapshot.0.last_included_index;
+            if boundary > self.log_base {
+                let drop =
+                    usize::try_from(boundary.0 - self.log_base.0).unwrap_or(usize::MAX);
+                let drained = drop.min(self.volatile_entries.len());
+                self.volatile_entries.drain(..drained);
+                self.log_base = boundary;
+            }
             self.durable_snapshot = Some(snapshot);
         }
     }
@@ -243,9 +315,12 @@ impl SimDisk {
     /// Restore the durable log: decode its records in index
     /// order, stopping at the first bad one.
     ///
-    /// The valid prefix is the restored log; a bad record and
-    /// everything after it is a torn tail, reported and dropped
-    /// (section 7.3).
+    /// Records at or below the log base are verified and
+    /// skipped: the durable snapshot covers them, and the
+    /// restore returns only the entries above the base
+    /// (invariant N-08). The valid suffix is the restored log;
+    /// a bad record and everything after it is a torn tail,
+    /// reported and dropped (section 7.3).
     ///
     /// # Panics
     ///
@@ -255,9 +330,23 @@ impl SimDisk {
     /// unreachable unless those guards are changed.
     #[must_use]
     pub fn restore_log(&self) -> LogRestore {
+        self.restore_from(self.log_base)
+    }
+
+    /// Restore the durable log ignoring the snapshot base:
+    /// every record from index 1, verified in order. A driver
+    /// whose snapshot payload failed verification at boot uses
+    /// this to replay the whole log instead (invariant H-06):
+    /// the snapshot is rejected, so nothing is covered.
+    #[must_use]
+    pub fn restore_whole_log(&self) -> LogRestore {
+        self.restore_from(LogIndex::ZERO)
+    }
+
+    fn restore_from(&self, base: LogIndex) -> LogRestore {
         let mut entries = Vec::new();
         let mut offset = 0usize;
-        let mut expected = 1u64;
+        let mut expected = base.0 + 1;
         let torn = loop {
             let rest = &self.durable_log[offset..];
             if rest.is_empty() {
@@ -307,7 +396,22 @@ impl SimDisk {
             hasher.update(LOG_CRC_DOMAIN);
             hasher.update(&record[..record_len - CRC_LEN]);
             let actual_crc = hasher.finalize();
-            if stored_crc != actual_crc || index != expected {
+            if stored_crc != actual_crc {
+                break Some(TornRecord {
+                    byte_offset: offset,
+                    index: LogIndex(index),
+                    expected_crc: stored_crc,
+                    actual_crc,
+                });
+            }
+            if index <= base.0 {
+                // Covered by the durable snapshot: verified
+                // above, skipped here. The restore returns
+                // only the entries above the base.
+                offset += record_len;
+                continue;
+            }
+            if index != expected {
                 break Some(TornRecord {
                     byte_offset: offset,
                     index: LogIndex(index),
@@ -331,11 +435,20 @@ impl SimDisk {
         LogRestore { entries, torn }
     }
 
-    /// The durable log entries (index 1 first): the valid record
-    /// prefix, as `restore_log` decodes it.
+    /// The durable log entries above the log base, in index
+    /// order: the valid record suffix, as `restore_log` decodes
+    /// it.
     #[must_use]
     pub fn durable_entries(&self) -> Vec<LogEntry> {
         self.restore_log().entries
+    }
+
+    /// The highest durable log index: the log base plus the
+    /// number of entries the restore decodes above it.
+    #[must_use]
+    pub fn durable_up_to(&self) -> LogIndex {
+        let count = u64::try_from(self.restore_log().entries.len()).unwrap_or(u64::MAX);
+        LogIndex(self.log_base.0 + count)
     }
 
     /// The durable snapshot, if one was fsynced.
@@ -470,6 +583,81 @@ mod tests {
         assert!(restore.torn.is_none());
         let terms: Vec<Term> = restore.entries.iter().map(|e| e.term).collect();
         assert_eq!(terms, vec![Term(1), Term(1), Term(2), Term(2)]);
+    }
+
+    fn meta(index: u64) -> SnapshotMeta {
+        SnapshotMeta {
+            last_included_index: LogIndex(index),
+            last_included_term: Term(1),
+            config: simraft_core::ClusterConfig::new([simraft_core::NodeId(1)], [])
+                .expect("one voter validates"),
+        }
+    }
+
+    #[test]
+    fn a_snapshot_fsync_rebases_the_log_base_and_keeps_later_writes_aligned() {
+        let mut disk = SimDisk::new();
+        disk.write_entries(LogIndex(1), &[entry(1), entry(1), entry(1), entry(1)]);
+        disk.fsync_entries();
+        // A snapshot whose boundary runs past everything the
+        // disk ever wrote (the node restored a short log, then
+        // installed a snapshot): the base advances to the
+        // boundary and the restore above it is empty.
+        disk.write_snapshot(meta(6), vec![9]);
+        disk.fsync_snapshot();
+        assert_eq!(disk.durable_up_to(), LogIndex(6));
+        assert!(disk.restore_log().entries.is_empty());
+        assert!(disk.restore_log().torn.is_none());
+        // The next write starts at index 7 and is stored at
+        // index 7, not shifted into the covered gap.
+        disk.write_entries(LogIndex(7), &[entry(2), entry(2)]);
+        disk.fsync_entries();
+        let restore = disk.restore_log();
+        assert!(restore.torn.is_none());
+        assert_eq!(restore.entries.len(), 2);
+        assert_eq!(restore.entries[0].term, Term(2));
+        assert_eq!(disk.durable_up_to(), LogIndex(8));
+        disk.crash();
+        assert_eq!(disk.durable_entries().len(), 2);
+        // The covered records are still on the disk, and a
+        // corruption inside one is still detected on restore.
+        assert!(disk.corrupt_log_record(LogIndex(2)));
+        let restore = disk.restore_log();
+        assert_eq!(
+            restore.torn.expect("the covered corruption is reported").index,
+            LogIndex(2)
+        );
+    }
+
+    #[test]
+    fn a_snapshot_fsync_keeps_the_covered_records_and_the_suffix_aligned() {
+        let mut disk = SimDisk::new();
+        let entries: Vec<LogEntry> = (0..8).map(|_| entry(1)).collect();
+        disk.write_entries(LogIndex(1), &entries);
+        disk.fsync_entries();
+        disk.write_snapshot(meta(5), vec![9]);
+        disk.fsync_snapshot();
+        // The restore returns only the suffix above the base.
+        let restore = disk.restore_log();
+        assert!(restore.torn.is_none());
+        assert_eq!(restore.entries.len(), 3);
+        assert_eq!(disk.durable_up_to(), LogIndex(8));
+        // Later writes stay at their absolute indexes.
+        disk.write_entries(LogIndex(9), &[entry(2)]);
+        disk.fsync_entries();
+        let restore = disk.restore_log();
+        assert!(restore.torn.is_none());
+        assert_eq!(restore.entries.len(), 4);
+        assert_eq!(restore.entries[3].term, Term(2));
+        assert_eq!(disk.durable_up_to(), LogIndex(9));
+        // A corruption above the base truncates the suffix.
+        assert!(disk.corrupt_log_record(LogIndex(7)));
+        let restore = disk.restore_log();
+        assert_eq!(restore.entries.len(), 1);
+        assert_eq!(
+            restore.torn.expect("the corruption is reported").index,
+            LogIndex(7)
+        );
     }
 
     #[test]
