@@ -375,24 +375,69 @@ impl Node {
         }
     }
 
+    /// Whether a held action can be released now: its persist needs
+    /// are met, and it is not a send from an older term (a stale send
+    /// is dropped, never released and never re-queued).
+    fn releasable(&self, held: &PendingAction) -> bool {
+        let stale_send =
+            matches!(held.action, Action::Send { .. }) && held.term != self.current_term;
+        !stale_send
+            && held.need_hard_gen <= self.hard_gen_acked
+            && held.need_entries_up_to <= self.entries_durable_up_to
+    }
+
     /// Release every held action whose persist needs are now met.
     /// Held sends from an older term are dropped instead: their content
     /// is stale by construction.
+    ///
+    /// Batching (invariant B-02): when one release flushes several
+    /// held `AppendEntries` sends to the same follower, only the last
+    /// is emitted. A send is built from the follower's next index at
+    /// build time, and that index only moves on real
+    /// acknowledgements or on rejection backoff, so the last send
+    /// covers every entry an earlier one carried that the follower
+    /// still needs, and any range it does not cover is re-offered by
+    /// the next heartbeat or proposal. No proposal waits any longer
+    /// than the persist acknowledgement it already waits for. Other
+    /// send kinds are never coalesced: `InstallSnapshot` chunks in
+    /// particular carry their own sequencing.
     fn flush_pending(&mut self, out: &mut Vec<Action>) {
-        let pending = std::mem::take(&mut self.pending);
-        for held in pending {
-            let stale_send =
-                matches!(held.action, Action::Send { .. }) && held.term != self.current_term;
-            if stale_send {
+        // The pending index of the last releasable AppendEntries
+        // send per follower: the only one of its run worth emitting.
+        let mut last_append: BTreeMap<NodeId, usize> = BTreeMap::new();
+        for (index, held) in self.pending.iter().enumerate() {
+            if !self.releasable(held) {
                 continue;
             }
-            if held.need_hard_gen <= self.hard_gen_acked
-                && held.need_entries_up_to <= self.entries_durable_up_to
+            if let Action::Send {
+                to,
+                msg: Message::AppendEntries { .. },
+            } = &held.action
             {
-                out.push(held.action);
-            } else {
-                self.pending.push(held);
+                last_append.insert(*to, index);
             }
+        }
+        let pending = std::mem::take(&mut self.pending);
+        for (index, held) in pending.into_iter().enumerate() {
+            if !self.releasable(&held) {
+                let stale_send = matches!(held.action, Action::Send { .. })
+                    && held.term != self.current_term;
+                if !stale_send {
+                    self.pending.push(held);
+                }
+                continue;
+            }
+            let superseded_append = matches!(
+                &held.action,
+                Action::Send {
+                    to,
+                    msg: Message::AppendEntries { .. },
+                } if last_append.get(to) != Some(&index)
+            );
+            if superseded_append {
+                continue;
+            }
+            out.push(held.action);
         }
     }
 
