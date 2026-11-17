@@ -657,10 +657,7 @@ mod tests {
         let restore = disk.restore_log();
         assert_eq!(restore.entries.len(), 1);
         assert_eq!(
-            restore
-                .torn
-                .expect("the corruption is reported")
-                .index,
+            restore.torn.expect("the corruption is reported").index,
             LogIndex(7)
         );
     }
