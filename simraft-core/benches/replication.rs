@@ -203,6 +203,8 @@ fn bench_replication(c: &mut Criterion) {
             black_box(out.len())
         });
     });
+    group.finish();
+
     {
         let mut group = c.benchmark_group("replication_batched");
         group.throughput(Throughput::Elements(32));
@@ -287,8 +289,6 @@ fn bench_replication(c: &mut Criterion) {
         });
         group.finish();
     }
-
-    group.finish();
 }
 
 criterion_group!(benches, bench_replication);
