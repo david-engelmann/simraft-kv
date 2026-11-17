@@ -210,7 +210,6 @@ fn route(nodes: &mut BTreeMap<NodeId, Node>, actions: Vec<Action>) -> Vec<(Clien
                     seq,
                     result: ClientResult::Committed,
                 } => responses.push((client_id, seq)),
-                Action::ClientResponse { .. } => {}
                 _ => {}
             }
         }
