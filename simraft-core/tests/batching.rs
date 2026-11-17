@@ -150,9 +150,9 @@ fn proposals_released_by_one_persist_ack_coalesce_into_one_append_round() {
         );
         assert_eq!(
             rounds[0],
-            (LogIndex(1), 8),
-            "B-02: the single round starts at the leader NoOp and \
-             carries all eight proposals"
+            (LogIndex(0), 9),
+            "B-02: the single round carries the leader NoOp and \
+             all eight proposals"
         );
     }
 }
@@ -165,22 +165,27 @@ fn a_single_proposal_still_sends_one_round() {
     for peer in [NodeId(2), NodeId(3)] {
         assert_eq!(
             append_rounds(&released, peer),
-            vec![(LogIndex(1), 1)],
-            "a lone proposal sends exactly one one-entry round"
+            vec![(LogIndex(0), 2)],
+            "a lone proposal sends exactly one round, carrying \
+             the leader NoOp and the proposal"
         );
     }
 }
 
 /// Route actions between the nodes, acknowledging persists
-/// immediately, until the cluster is quiescent; returns every
-/// client response the leader emitted on the way.
-fn route(nodes: &mut BTreeMap<NodeId, Node>, actions: Vec<Action>) -> Vec<ClientResult> {
+/// immediately, until the cluster is quiescent; returns the
+/// (client, sequence) pair of every `Committed` client response
+/// any node emitted on the way. Every node that applies a
+/// command entry emits that entry's response, so the same pair
+/// arrives once per applying node and drivers deduplicate by
+/// client and sequence.
+fn route(nodes: &mut BTreeMap<NodeId, Node>, actions: Vec<Action>) -> Vec<(ClientId, u64)> {
     let mut responses = Vec::new();
     let mut queue: Vec<(NodeId, Event)> = Vec::new();
-    let mut collect = |queue: &mut Vec<(NodeId, Event)>,
-                       responses: &mut Vec<ClientResult>,
-                       source: NodeId,
-                       actions: Vec<Action>| {
+    let collect = |queue: &mut Vec<(NodeId, Event)>,
+                   responses: &mut Vec<(ClientId, u64)>,
+                   source: NodeId,
+                   actions: Vec<Action>| {
         for action in actions {
             match action {
                 Action::Send { to, msg } => {
@@ -200,7 +205,12 @@ fn route(nodes: &mut BTreeMap<NodeId, Node>, actions: Vec<Action>) -> Vec<Client
                         up_to_index: LogIndex::ZERO,
                     },
                 )),
-                Action::ClientResponse { result, .. } => responses.push(result),
+                Action::ClientResponse {
+                    client_id,
+                    seq,
+                    result: ClientResult::Committed,
+                } => responses.push((client_id, seq)),
+                Action::ClientResponse { .. } => {}
                 _ => {}
             }
         }
@@ -258,19 +268,25 @@ fn a_coalesced_batch_still_commits_every_proposal() {
     );
     let responses = route(&mut nodes, actions);
     assert_eq!(
-        nodes
-            .get(&NodeId(1))
-            .expect("leader exists")
-            .commit_index(),
+        nodes.get(&NodeId(1)).expect("leader exists").commit_index(),
         LogIndex(9),
         "the leader NoOp and all eight proposals commit"
     );
+    for i in 1..=8_u64 {
+        assert!(
+            responses.contains(&(ClientId(i), 1)),
+            "proposal {i} is answered Committed"
+        );
+    }
+    let mut distinct: Vec<(ClientId, u64)> = Vec::new();
+    for pair in &responses {
+        if !distinct.contains(pair) {
+            distinct.push(*pair);
+        }
+    }
     assert_eq!(
-        responses
-            .iter()
-            .filter(|r| matches!(r, ClientResult::Committed))
-            .count(),
+        distinct.len(),
         8,
-        "every proposal in the batch is answered Committed"
+        "exactly the eight proposals are answered Committed"
     );
 }
