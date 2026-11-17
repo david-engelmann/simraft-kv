@@ -605,7 +605,7 @@ mod tests {
         disk.write_snapshot(meta(6), vec![9]);
         disk.fsync_snapshot();
         assert_eq!(disk.durable_up_to(), LogIndex(6));
-        assert!(disk.restore_log().entries.is_empty());
+        assert_eq!(disk.restore_log().entries.len(), 0);
         assert!(disk.restore_log().torn.is_none());
         // The next write starts at index 7 and is stored at
         // index 7, not shifted into the covered gap.
