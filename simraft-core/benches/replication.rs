@@ -153,7 +153,9 @@ fn bench_replication(c: &mut Criterion) {
         });
         group.finish();
     }
+}
 
+fn bench_step_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("step_latency");
     group.bench_function("follower_append_entries", |b| {
         let mut nodes = cluster();
@@ -204,7 +206,9 @@ fn bench_replication(c: &mut Criterion) {
         });
     });
     group.finish();
+}
 
+fn bench_replication_batched(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("replication_batched");
         group.throughput(Throughput::Elements(32));
@@ -233,7 +237,9 @@ fn bench_replication(c: &mut Criterion) {
         });
         group.finish();
     }
+}
 
+fn bench_replication_catch_up(c: &mut Criterion) {
     {
         let mut group = c.benchmark_group("replication_catch_up");
         group.throughput(Throughput::Elements(10_000));
@@ -291,5 +297,11 @@ fn bench_replication(c: &mut Criterion) {
     }
 }
 
-criterion_group!(benches, bench_replication);
+criterion_group!(
+    benches,
+    bench_replication,
+    bench_step_latency,
+    bench_replication_batched,
+    bench_replication_catch_up
+);
 criterion_main!(benches);
