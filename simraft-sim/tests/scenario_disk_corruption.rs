@@ -83,7 +83,12 @@ fn corrupt_snapshot_is_rejected_on_restore_and_the_log_replays() {
         faults,
         scripted: vec![
             (6_000, ScriptedOp::CorruptSnapshot { node: NodeId(3) }),
-            (6_010, ScriptedOp::Crash(NodeId(3))),
+            // The crash shares the corruption's tick: a later
+            // crash leaves a window in which the node's own
+            // compaction can fsync a fresh snapshot over the
+            // corrupted one, healing the fault before the
+            // restore can observe it.
+            (6_000, ScriptedOp::Crash(NodeId(3))),
         ],
         ..SimConfig::default()
     };
