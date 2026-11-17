@@ -286,8 +286,7 @@ impl SimDisk {
         if let Some(snapshot) = self.volatile_snapshot.take() {
             let boundary = snapshot.0.last_included_index;
             if boundary > self.log_base {
-                let drop =
-                    usize::try_from(boundary.0 - self.log_base.0).unwrap_or(usize::MAX);
+                let drop = usize::try_from(boundary.0 - self.log_base.0).unwrap_or(usize::MAX);
                 let drained = drop.min(self.volatile_entries.len());
                 self.volatile_entries.drain(..drained);
                 self.log_base = boundary;
@@ -624,7 +623,10 @@ mod tests {
         assert!(disk.corrupt_log_record(LogIndex(2)));
         let restore = disk.restore_log();
         assert_eq!(
-            restore.torn.expect("the covered corruption is reported").index,
+            restore
+                .torn
+                .expect("the covered corruption is reported")
+                .index,
             LogIndex(2)
         );
     }
@@ -655,7 +657,10 @@ mod tests {
         let restore = disk.restore_log();
         assert_eq!(restore.entries.len(), 1);
         assert_eq!(
-            restore.torn.expect("the corruption is reported").index,
+            restore
+                .torn
+                .expect("the corruption is reported")
+                .index,
             LogIndex(7)
         );
     }
