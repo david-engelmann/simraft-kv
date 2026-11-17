@@ -5,7 +5,7 @@
 //! spans, crash and clock-jump rates for the chaos phase, and
 //! scripted operations a scenario can schedule at exact ticks.
 
-use simraft_core::{ConfigChange, NodeId};
+use simraft_core::{ConfigChange, LogIndex, NodeId};
 
 /// A directed partition: delivery from `from` to `to` is denied
 /// while the tick is in `[start, end)`. The reverse direction is
@@ -41,6 +41,25 @@ pub enum ScriptedOp {
     /// Crash this node now (it restarts after the harness's restart
     /// delay with only its durable state).
     Crash(NodeId),
+    /// Flip one byte in this node's durable log record for
+    /// `index` (post-M4 Lane 2). The record's checksum fails at
+    /// the next restore, which truncates the log there
+    /// (invariant H-05). No-op when the record is absent.
+    CorruptLog {
+        /// The node whose durable log is corrupted.
+        node: NodeId,
+        /// The log index whose record is corrupted.
+        index: LogIndex,
+    },
+    /// Flip one byte in this node's durable snapshot payload
+    /// (post-M4 Lane 2). The payload's checksum fails at the
+    /// next restore, which rejects the snapshot and replays
+    /// the log instead (invariant H-06). No-op when the node
+    /// holds no durable snapshot.
+    CorruptSnapshot {
+        /// The node whose durable snapshot is corrupted.
+        node: NodeId,
+    },
     /// Jump the virtual clock forward by this many ticks at once.
     JumpClock(u64),
 }
@@ -52,6 +71,11 @@ pub struct FaultConfig {
     pub drop_per_mille: u64,
     /// Per-packet duplication probability during the chaos phase.
     pub duplicate_per_mille: u64,
+    /// Per-packet bit-flip probability during the chaos phase
+    /// (post-M4 Lane 2): one seeded bit of the encoded frame is
+    /// flipped before delivery, so the receiver's frame checks
+    /// (magic, length, CRC-32) reject it (invariant H-04).
+    pub corrupt_per_mille: u64,
     /// The latency range a packet's delivery delay is drawn from,
     /// in ticks, during the chaos phase.
     pub latency_min: u64,
@@ -72,6 +96,7 @@ impl Default for FaultConfig {
         Self {
             drop_per_mille: 20,
             duplicate_per_mille: 10,
+            corrupt_per_mille: 0,
             latency_min: 1,
             latency_max: 10,
             crash_per_mille: 1,
@@ -90,6 +115,7 @@ impl FaultConfig {
         Self {
             drop_per_mille: 0,
             duplicate_per_mille: 0,
+            corrupt_per_mille: 0,
             latency_min: 1,
             latency_max: 1,
             crash_per_mille: 0,

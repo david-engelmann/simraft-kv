@@ -62,6 +62,7 @@ fn one_vote_per_term_across_restart() {
             voted_for: Some(NodeId(1)),
         },
         entries: vec![],
+        snapshot: None,
     });
 
     // A second candidate in the same term must be refused.
@@ -113,6 +114,7 @@ fn stale_log_candidate_is_refused() {
                 kind: EntryKind::NoOp,
             },
         ],
+        snapshot: None,
     });
 
     // (candidate last index, candidate last term, expected grant)
@@ -153,6 +155,7 @@ fn stale_log_candidate_is_refused() {
                     kind: EntryKind::NoOp,
                 },
             ],
+            snapshot: None,
         });
         let actions = v.step(Event::Message {
             from: NodeId(1),
