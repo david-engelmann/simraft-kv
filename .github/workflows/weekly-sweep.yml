@@ -1,0 +1,48 @@
+name: Weekly seed sweep (100,000 seeds)
+
+# Post-M4 Lane 2 (docs/ROADMAP.md): the long tail of the seed
+# space is explored continuously, not once. Ten shards of 10,000
+# seeds each cover seeds 0..100,000 every week; each shard runs
+# the same batch loop as the CI seed sweep (one process per 100
+# seeds, the seed printed on the first line per D-03, a nonzero
+# exit on any failed seed). A failing shard names its seed
+# range, and any failing seed replays locally with that single
+# value.
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  sweep:
+    name: Seeds from ${{ matrix.base }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        base: [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+      - name: Run 10,000 seeds
+        run: |
+          cargo build -p simraft-sim --release
+          step=100
+          end=$(( ${{ matrix.base }} + 10000 ))
+          for (( base=${{ matrix.base }}; base<end; base+=step )); do
+            SIM_SEED=$base ./target/release/simraft-sim \
+              --seed "$base" --seeds "$step" --json > "sweep-$base.json"
+            head -1 "sweep-$base.json"
+          done

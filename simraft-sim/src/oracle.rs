@@ -261,7 +261,19 @@ fn leader_completeness(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
             continue;
         }
         for (index, term) in &committed {
-            if view.term_at(*index) != Some(*term) {
+            // Entries at or below the leader's snapshot base are
+            // held by its snapshot, not its log: below the base the
+            // snapshot covers them by construction, and at the base
+            // the recorded base term must match. Only entries above
+            // the base are checked against the log itself. Without
+            // this, a leader that compacts past a committed entry
+            // reads as missing it.
+            let present = match (*index).cmp(&view.base_index) {
+                std::cmp::Ordering::Less => true,
+                std::cmp::Ordering::Equal => view.base_term == *term,
+                std::cmp::Ordering::Greater => view.term_at(*index) == Some(*term),
+            };
+            if !present {
                 return Err(OracleViolation {
                     oracle: "leader_completeness",
                     detail: format!(

@@ -300,7 +300,13 @@ impl Node {
             Event::Restored {
                 hard_state,
                 entries,
-            } => self.on_restored(hard_state.current_term, hard_state.voted_for, &entries),
+                snapshot,
+            } => self.on_restored(
+                hard_state.current_term,
+                hard_state.voted_for,
+                &entries,
+                snapshot.as_ref(),
+            ),
         }
         out
     }
@@ -407,10 +413,26 @@ impl Node {
         self.flush_pending(out);
     }
 
-    fn on_restored(&mut self, term: Term, voted_for: Option<NodeId>, entries: &[LogEntry]) {
+    fn on_restored(
+        &mut self,
+        term: Term,
+        voted_for: Option<NodeId>,
+        entries: &[LogEntry],
+        snapshot: Option<&SnapshotMeta>,
+    ) {
         self.current_term = term;
         self.voted_for = voted_for;
         self.log = Log::new();
+        // The recovered entries begin above the snapshot
+        // boundary (invariant N-08): a store returns only the
+        // entries its durable snapshot does not cover, so the
+        // fresh log's base advances to the boundary before the
+        // suffix is appended and every recovered entry lands at
+        // its absolute index.
+        if let Some(meta) = snapshot {
+            self.log
+                .advance_base(meta.last_included_index, meta.last_included_term);
+        }
         self.log.append(entries);
         self.role = Role::Follower;
         self.commit_index = LogIndex::ZERO;
@@ -431,6 +453,16 @@ impl Node {
         self.incoming_snapshot = None;
         self.loaded_snapshot = None;
         self.recompute_config();
+        // A recovered snapshot installs its boundary at restore
+        // (invariant N-07): the commit and applied cursors jump
+        // to the boundary and the boundary's cluster config
+        // takes over. The commit bound that guards a live
+        // compaction (N-05) does not apply here: the snapshot is
+        // already durable, and the recovered commit index starts
+        // at zero by construction.
+        if let Some(meta) = snapshot {
+            self.install_snapshot(meta);
+        }
         self.entries_durable_up_to = self.log.last_index();
         self.hard_gen_sent += 1;
         self.hard_gen_acked = self.hard_gen_sent;
@@ -873,6 +905,13 @@ impl Node {
     /// Send the next `InstallSnapshot` chunk to `peer`, or ask the
     /// driver to load the base snapshot when its bytes are not in
     /// memory (docs/ARCHITECTURE.md section 9, snapshot relay).
+    ///
+    /// A relay that was sent in full but never answered (the
+    /// peer's `InstallSnapshotResponse` clears the relay state)
+    /// restarts from offset 0 on the next send: the peer may
+    /// have missed every chunk, for example across a partition,
+    /// and resending only the empty tail chunk would wedge it
+    /// until the next compaction (invariant N-06).
     fn send_snapshot_chunk(&mut self, peer: NodeId, out: &mut Vec<Action>) {
         let meta = self.base_meta();
         let Some(loaded) = &self.loaded_snapshot else {
@@ -890,7 +929,10 @@ impl Node {
         };
         let offset = match prog.snapshot {
             Some((index, term, next_offset))
-                if index == meta.last_included_index && term == meta.last_included_term =>
+                if index == meta.last_included_index
+                    && term == meta.last_included_term
+                    && next_offset > 0
+                    && next_offset < loaded.data.len() as u64 =>
             {
                 next_offset
             }

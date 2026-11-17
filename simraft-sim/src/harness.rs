@@ -42,6 +42,11 @@ pub struct SimConfig {
     pub seed: u64,
     /// The number of nodes (all voters at genesis).
     pub node_count: usize,
+    /// Extra nodes that join the genesis configuration as
+    /// learners (post-M4 Lane 2): they run, replicate, and apply
+    /// from tick zero but never vote or campaign until a config
+    /// change promotes them.
+    pub learners: Vec<NodeId>,
     /// The core protocol configuration for every node.
     pub core: Config,
     /// The length of the chaos phase, in ticks.
@@ -65,6 +70,7 @@ impl Default for SimConfig {
         Self {
             seed: 0,
             node_count: 3,
+            learners: Vec::new(),
             core: Config::default(),
             chaos_ticks: 4_000,
             heal_ticks: 4_000,
@@ -105,6 +111,10 @@ pub struct RunReport {
     pub oracle_failure: Option<OracleViolation>,
     /// The recorded client history.
     pub history: History,
+    /// Every node's last applied index at the end of the run, in
+    /// node order (learners included): the catch-up evidence a
+    /// scenario asserts against the final commit index.
+    pub final_applied: Vec<(NodeId, LogIndex)>,
     /// The largest Propose-to-Apply latency over completed client
     /// writes, in virtual ticks (invariant L-02's measurement).
     pub max_commit_latency_ticks: u64,
@@ -266,10 +276,10 @@ struct Driver<'a> {
 impl<'a> Driver<'a> {
     fn new(config: &'a SimConfig) -> Self {
         let ids: Vec<NodeId> = (1..=config.node_count as u64).map(NodeId).collect();
-        let genesis = ClusterConfig::new(ids.clone(), Vec::new())
+        let genesis = ClusterConfig::new(ids.clone(), config.learners.clone())
             .expect("the genesis config of a run always validates");
         let mut nodes = BTreeMap::new();
-        for id in ids {
+        for id in ids.iter().copied().chain(config.learners.iter().copied()) {
             let node = Node::new(id, config.core.clone(), genesis.clone(), config.seed ^ id.0)
                 .expect("the run's core config always validates");
             nodes.insert(
@@ -427,6 +437,26 @@ impl<'a> Driver<'a> {
                         self.step_node(leader, Event::ProposeConfig { change });
                     }
                 }
+                ScriptedOp::CorruptLog { node, index } => {
+                    let flipped = self
+                        .nodes
+                        .get_mut(&node)
+                        .is_some_and(|sim| sim.disk.corrupt_log_record(index));
+                    self.trace.push(
+                        self.now,
+                        &format!("corrupt_log {node} {index} flipped={flipped}"),
+                    );
+                }
+                ScriptedOp::CorruptSnapshot { node } => {
+                    let flipped = self
+                        .nodes
+                        .get_mut(&node)
+                        .is_some_and(|sim| sim.disk.corrupt_snapshot());
+                    self.trace.push(
+                        self.now,
+                        &format!("corrupt_snapshot {node} flipped={flipped}"),
+                    );
+                }
                 ScriptedOp::RemoveLeader => {
                     if let Some((leader, _)) = self.current_leader {
                         self.step_node(
@@ -460,17 +490,55 @@ impl<'a> Driver<'a> {
     }
 
     fn restart_node(&mut self, id: NodeId) {
-        let (hard, entries, snapshot) = {
+        let (hard, snapshot) = {
             let sim = self.nodes.get(&id).expect("restart targets a node");
             (
                 sim.disk.durable_hard().unwrap_or(HardState {
                     current_term: Term::ZERO,
                     voted_for: None,
                 }),
-                sim.disk.durable_entries().to_vec(),
                 sim.disk.durable_snapshot().cloned(),
             )
         };
+        let mut machine = KvStateMachine::new(SESSION_CAPACITY);
+        // A durable snapshot whose payload verifies installs
+        // into the machine here, and its boundary installs into
+        // the core through the Restored event itself (invariant
+        // N-07); the log restore then returns only the entries
+        // above that boundary (invariant N-08). A payload that
+        // fails its checksum is rejected whole (post-M4 Lane 2,
+        // invariant H-06): neither install happens, nothing is
+        // covered, and the whole log replays from index 1, so
+        // the node's base never advances over state its machine
+        // does not hold.
+        let mut boot_snapshot: Option<(SnapshotMeta, Vec<u8>)> = None;
+        if let Some((meta, data)) = snapshot {
+            if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
+                machine.install_snapshot(parts);
+                boot_snapshot = Some((meta, data));
+            } else {
+                self.trace
+                    .push(self.now, &format!("snapshot_rejected {id}"));
+            }
+        }
+        let restore = {
+            let sim = self.nodes.get(&id).expect("restart targets a node");
+            if boot_snapshot.is_some() {
+                sim.disk.restore_log()
+            } else {
+                sim.disk.restore_whole_log()
+            }
+        };
+        if let Some(torn) = &restore.torn {
+            self.trace.push(
+                self.now,
+                &format!(
+                    "log_truncated {id} index {} expected {:08x} actual {:08x}",
+                    torn.index.0, torn.expected_crc, torn.actual_crc
+                ),
+            );
+        }
+        let entries = restore.entries;
         let mut node = Node::new(
             id,
             self.config.core.clone(),
@@ -478,21 +546,16 @@ impl<'a> Driver<'a> {
             self.config.seed ^ id.0,
         )
         .expect("the run's core config always validates");
-        let mut machine = KvStateMachine::new(SESSION_CAPACITY);
         let mut actions = node.step(Event::Restored {
             hard_state: hard,
             entries,
+            snapshot: boot_snapshot.as_ref().map(|(meta, _)| meta.clone()),
         });
-        if let Some((meta, data)) = snapshot {
-            if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
-                machine.install_snapshot(parts);
-            }
-            let mut more = node.step(Event::SnapshotLoaded {
-                meta: meta.clone(),
-                data,
-            });
-            actions.append(&mut more);
-            let mut more = node.step(Event::SnapshotPersisted { meta });
+        if let Some((meta, data)) = boot_snapshot {
+            // Keep the verified bytes loaded so a node that goes
+            // on to lead can relay them without a store round
+            // trip.
+            let mut more = node.step(Event::SnapshotLoaded { meta, data });
             actions.append(&mut more);
         }
         {
@@ -568,7 +631,7 @@ impl<'a> Driver<'a> {
                 let up_to = {
                     let sim = self.nodes.get_mut(&id).expect("fsync targets a node");
                     sim.disk.fsync_entries();
-                    LogIndex(sim.disk.durable_entries().len() as u64)
+                    sim.disk.durable_up_to()
                 };
                 self.step_node(
                     id,
@@ -579,12 +642,31 @@ impl<'a> Driver<'a> {
                 );
             }
             FsyncKind::Snapshot => {
-                let meta = {
+                let snapshot = {
                     let sim = self.nodes.get_mut(&id).expect("fsync targets a node");
                     sim.disk.fsync_snapshot();
-                    sim.disk.durable_snapshot().map(|(meta, _)| meta.clone())
+                    sim.disk.durable_snapshot().cloned()
                 };
-                if let Some(meta) = meta {
+                if let Some((meta, data)) = snapshot {
+                    // This fsync completes a snapshot persist:
+                    // a received install (the core's
+                    // PersistSnapshot action) or the node's own
+                    // compaction (queued by maybe_compact). The
+                    // payload enters the state machine here, paired
+                    // with the cursor jump the core makes on
+                    // SnapshotPersisted: for a received snapshot
+                    // the install is what the machine holds at
+                    // all, and without it the machine would
+                    // silently miss the snapshotted state while
+                    // the core applies past it; for the node's own
+                    // snapshot the install restores exactly the
+                    // state the machine already holds (post-M4
+                    // Lane 2, invariant H-08).
+                    if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
+                        if let Some(sim) = self.nodes.get_mut(&id) {
+                            sim.machine.install_snapshot(parts);
+                        }
+                    }
                     self.step_node(id, Event::SnapshotPersisted { meta });
                 }
             }
@@ -663,6 +745,21 @@ impl<'a> Driver<'a> {
                     result,
                 } => self.handle_client_response(client_id, seq, &result),
                 Action::PersistSnapshot { meta, data } => {
+                    // A persist whose boundary lies past the end
+                    // of the node's own log is a received snapshot:
+                    // the node could not have compacted entries it
+                    // never held. Traced as the scenarios' H-08
+                    // evidence that a transfer really happened.
+                    if self
+                        .nodes
+                        .get(&id)
+                        .is_some_and(|sim| sim.node.log().last_index() < meta.last_included_index)
+                    {
+                        self.trace.push(
+                            self.now,
+                            &format!("snapshot_received {id} upto {}", meta.last_included_index.0),
+                        );
+                    }
                     let epoch = {
                         let sim = self.nodes.get_mut(&id).expect("action source exists");
                         sim.disk.write_snapshot(meta, data);
@@ -718,7 +815,29 @@ impl<'a> Driver<'a> {
         } else {
             1
         };
-        let frame = encode_frame(from, to, msg);
+        let mut frame = encode_frame(from, to, msg);
+        // Frame corruption (post-M4 Lane 2, invariant H-04): one
+        // seeded bit flips in the encoded frame. The draw sits in
+        // a fixed position in the send path's call order (after
+        // the latency draw, before the duplication draw) so a
+        // seed replays identically. The receiver's frame checks
+        // reject the result exactly as they reject a truncated or
+        // foreign frame, so corruption is indistinguishable from
+        // loss at the protocol level.
+        if chaos
+            && self.config.faults.corrupt_per_mille > 0
+            && self.rng.per_mille(self.config.faults.corrupt_per_mille)
+        {
+            let byte = usize::try_from(
+                self.rng
+                    .next_below(u64::try_from(frame.len()).unwrap_or(u64::MAX)),
+            )
+            .unwrap_or(0);
+            let bit = u8::try_from(self.rng.next_below(8)).unwrap_or(0);
+            frame[byte] ^= 1u8 << bit;
+            self.trace
+                .push(now, &format!("frame_corrupted {from}->{to}"));
+        }
         self.queue.push(
             now + latency,
             SimEvent::Deliver {
@@ -887,15 +1006,25 @@ impl<'a> Driver<'a> {
             match sim.disk.durable_snapshot() {
                 Some((stored, data)) if *stored == meta => Some(data.clone()),
                 _ => {
+                    // Rebuild from the machine only when the
+                    // machine stands exactly at the requested
+                    // boundary: a snapshot parts call labels the
+                    // machine's current state with the requested
+                    // meta, so rebuilding from a machine that has
+                    // applied past the boundary would hand the
+                    // receiver state from its future under an
+                    // older index. In that case the load is
+                    // unmet and the leader retries.
                     let term = sim.node.log().term_at(meta.last_included_index);
-                    term.map(|_| {
-                        let parts = sim.machine.snapshot_parts(
-                            meta.last_included_index,
-                            meta.last_included_term,
-                            sim.node.cluster(),
-                        );
-                        encode_snapshot(&parts)
-                    })
+                    term.filter(|_| sim.node.last_applied() == meta.last_included_index)
+                        .map(|_| {
+                            let parts = sim.machine.snapshot_parts(
+                                meta.last_included_index,
+                                meta.last_included_term,
+                                sim.node.cluster(),
+                            );
+                            encode_snapshot(&parts)
+                        })
                 }
             }
         };
@@ -931,7 +1060,31 @@ impl<'a> Driver<'a> {
             }
         };
         if let Some((meta, data)) = plan {
+            // The core advances the base on SnapshotPersisted,
+            // and it emits no PersistSnapshot action for a node's
+            // own snapshot (that action is reserved for received
+            // installs), so the driver completes the persist
+            // cycle itself: load the bytes into the core, write
+            // them to the disk's volatile snapshot, and queue the
+            // fsync that steps SnapshotPersisted. Without this
+            // the base never advances and no follower ever falls
+            // behind it, which silently disarms the whole
+            // InstallSnapshot relay in the simulator (post-M4
+            // Lane 2, invariant H-08).
+            let epoch = {
+                let sim = self.nodes.get_mut(&id).expect("compact targets a node");
+                sim.disk.write_snapshot(meta.clone(), data.clone());
+                sim.epoch
+            };
             self.step_node(id, Event::SnapshotLoaded { meta, data });
+            self.queue.push(
+                self.now + FSYNC_DELAY,
+                SimEvent::Fsync {
+                    node: id,
+                    epoch,
+                    kind: FsyncKind::Snapshot,
+                },
+            );
         }
     }
 
@@ -1121,6 +1274,37 @@ impl<'a> Driver<'a> {
         digest_hex(&bytes)
     }
 
+    /// Whether two nodes hold the same logical log, allowing
+    /// different snapshot bases: compaction timing is node local,
+    /// so at the end of a run one node may hold entries another
+    /// node has already folded into its snapshot. The logs agree
+    /// when the last indexes match, the term at the higher base
+    /// matches on both sides, and every entry above the higher
+    /// base is identical.
+    fn same_log(a: &NodeSim, b: &NodeSim) -> bool {
+        let (la, lb) = (a.node.log(), b.node.log());
+        if la.last_index() != lb.last_index() {
+            return false;
+        }
+        let shared = la.base_index().max(lb.base_index());
+        if la.term_at(shared) != lb.term_at(shared) {
+            return false;
+        }
+        let ea = la
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| la.base_index().0 + 1 + *i as u64 > shared.0)
+            .map(|(_, e)| e);
+        let eb = lb
+            .entries()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| lb.base_index().0 + 1 + *i as u64 > shared.0)
+            .map(|(_, e)| e);
+        ea.eq(eb)
+    }
+
     fn state_digest_node(sim: &NodeSim) -> String {
         let applied = sim.node.last_applied();
         let term = sim
@@ -1161,7 +1345,7 @@ impl<'a> Driver<'a> {
                         .collect();
                     !members.is_empty()
                         && members.iter().all(|n| {
-                            Self::log_digest(n) == Self::log_digest(members[0])
+                            Self::same_log(n, members[0])
                                 && Self::state_digest_node(n) == Self::state_digest_node(members[0])
                         })
                 });
@@ -1196,6 +1380,11 @@ impl<'a> Driver<'a> {
             verdict,
             oracle_failure,
             history: std::mem::take(&mut self.history),
+            final_applied: self
+                .nodes
+                .iter()
+                .map(|(id, sim)| (*id, sim.node.last_applied()))
+                .collect(),
             max_commit_latency_ticks: self.max_latency,
             trace: std::mem::take(&mut self.trace),
         }

@@ -1,5 +1,6 @@
 //! Snapshot property tests (docs/ARCHITECTURE.md section 7.4,
-//! invariants N-01, N-02, N-04, N-05 in docs/INVARIANTS.md).
+//! invariants N-01, N-02, N-04, N-05, N-06, N-07 in
+//! docs/INVARIANTS.md).
 //!
 //! Chunked `InstallSnapshot`: automatic fallback at the base
 //! boundary, strictly sequential chunk offsets, snapshot identity
@@ -207,6 +208,7 @@ fn matching_prefix_retained_divergent_log_discarded() {
                 voted_for: None,
             },
             entries: entries(terms),
+            snapshot: None,
         });
         n
     };
@@ -306,4 +308,130 @@ fn compaction_never_touches_committed_or_uncommitted_boundary() {
         LogIndex(5),
         "the uncommitted tail survives compaction"
     );
+}
+
+#[test]
+fn a_completed_unacknowledged_relay_restarts_from_offset_zero() {
+    let cfg = all_voters(&[1, 2, 3]);
+    let mut leader = node(1, &cfg, 7);
+    elect(&mut leader, &[NodeId(2), NodeId(3)]);
+    leader.step(Event::Persisted {
+        kind: PersistKind::Entries,
+        up_to_index: LogIndex(1),
+    });
+    let term = leader.current_term();
+    for seq in 1..=3_u64 {
+        leader.step(Event::Propose {
+            client_id: ClientId(1),
+            seq,
+            payload: vec![u8::try_from(seq).unwrap_or(0)],
+        });
+        leader.step(Event::Persisted {
+            kind: PersistKind::Entries,
+            up_to_index: leader.log().last_index(),
+        });
+    }
+    leader.step(append_response(2, term, 4));
+    assert_eq!(leader.commit_index(), LogIndex(4));
+    let snap = meta(4, term.0, &cfg);
+    leader.step(Event::SnapshotLoaded {
+        meta: snap.clone(),
+        data: vec![9; 32],
+    });
+    leader.step(Event::SnapshotPersisted { meta: snap });
+    assert_eq!(leader.log().base_index(), LogIndex(4));
+
+    let sends_to_three = |actions: &[Action]| -> Vec<(u64, usize, bool)> {
+        actions
+            .iter()
+            .filter_map(|a| match a {
+                Action::Send {
+                    to,
+                    msg:
+                        Message::InstallSnapshot {
+                            offset, data, done, ..
+                        },
+                } if *to == NodeId(3) => Some((*offset, data.len(), *done)),
+                _ => None,
+            })
+            .collect()
+    };
+
+    // The first send carries the whole snapshot in one chunk.
+    let first = leader.step(Event::Tick { now: 2_000_000 });
+    assert_eq!(sends_to_three(&first), vec![(0, 32, true)]);
+
+    // Node 3 never answers (every chunk was lost, for example
+    // across a partition). The next send must restart the relay
+    // from offset 0 with the full chunk, not resend an empty
+    // tail chunk at offset 32 forever (N-06).
+    let second = leader.step(Event::Tick { now: 2_001_000 });
+    assert_eq!(
+        sends_to_three(&second),
+        vec![(0, 32, true)],
+        "N-06: an unacknowledged completed relay restarts from offset 0"
+    );
+}
+
+fn restored_entries(terms: &[u64]) -> Vec<LogEntry> {
+    terms
+        .iter()
+        .map(|&t| LogEntry {
+            term: Term(t),
+            kind: EntryKind::NoOp,
+        })
+        .collect()
+}
+
+#[test]
+fn a_restored_snapshot_installs_its_boundary_over_the_recovered_log() {
+    let cfg = all_voters(&[1, 2, 3]);
+    let mut n = node(2, &cfg, 7);
+    n.step(Event::Restored {
+        hard_state: HardState {
+            current_term: Term(2),
+            voted_for: None,
+        },
+        // The store returns only the entries above its
+        // snapshot's boundary (invariant N-08): these two
+        // entries are indexes 4 and 5.
+        entries: restored_entries(&[2, 2]),
+        snapshot: Some(meta(3, 2, &cfg)),
+    });
+    assert_eq!(
+        n.log().base_index(),
+        LogIndex(3),
+        "N-07: the boundary installs at restore, though the recovered commit index is zero"
+    );
+    assert_eq!(
+        n.log().last_index(),
+        LogIndex(5),
+        "N-08: the recovered suffix lands at its absolute indexes above the boundary"
+    );
+    assert_eq!(n.log().entries().len(), 2);
+    assert_eq!(n.log().entries()[0].term, Term(2));
+    assert_eq!(n.commit_index(), LogIndex(3));
+    assert_eq!(n.last_applied(), LogIndex(3));
+}
+
+#[test]
+fn a_restored_snapshot_covering_the_whole_log_restores_an_empty_suffix() {
+    let cfg = all_voters(&[1, 2, 3]);
+    let mut n = node(2, &cfg, 7);
+    n.step(Event::Restored {
+        hard_state: HardState {
+            current_term: Term(2),
+            voted_for: None,
+        },
+        entries: Vec::new(),
+        snapshot: Some(meta(3, 2, &cfg)),
+    });
+    assert_eq!(n.log().base_index(), LogIndex(3));
+    assert_eq!(
+        n.log().last_index(),
+        LogIndex(3),
+        "N-07: a snapshot covering the whole recovered log leaves the log at its boundary"
+    );
+    assert_eq!(n.commit_index(), LogIndex(3));
+    assert_eq!(n.last_applied(), LogIndex(3));
 }

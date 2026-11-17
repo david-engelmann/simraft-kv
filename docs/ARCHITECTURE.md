@@ -146,7 +146,7 @@ Event::ReadIndex { request_id: u64, key: Vec<u8> }
 Event::Message { from: NodeId, msg: Message }
 Event::Persisted { kind: PersistKind, up_to_index: LogIndex }
 Event::SnapshotPersisted { meta: SnapshotMeta }
-Event::Restored { hard_state: HardState, entries: Vec<LogEntry> }
+Event::Restored { hard_state: HardState, entries: Vec<LogEntry>, snapshot: Option<SnapshotMeta> }
 ```
 
 As built at M1: the event and action enums carry the variants M1
@@ -489,7 +489,11 @@ retains the matching log prefix if its log contains an entry at
 last_included_index with last_included_term, and discards its entire log
 otherwise, then sets its base to the snapshot meta. The leader switches a
 follower to InstallSnapshot automatically whenever next_index is at or
-below the leader's snapshot base index (INVARIANT N-01).
+below the leader's snapshot base index (INVARIANT N-01). A relay that
+was sent in full but never answered restarts from offset 0 on the next
+send, so a follower that missed every chunk across a partition is
+caught up by the current snapshot instead of waiting for the next
+compaction to change the snapshot identity (INVARIANT N-06).
 
 ### 7.5 Digests and domain separation
 
@@ -663,6 +667,11 @@ real wire codec, not structured shortcuts. Faults, all seeded:
   delivery A to B independently of B to A. The chaos matrix exercises
   one-way cuts (A->B only), chains (A->B, B->C, A cut from C both ways),
   and full isolation of one node, then heals all of them.
+- Corruption (post-M4 Lane 2): with configured probability, one seeded
+  bit of a packet's encoded frame flips before delivery. The receiver's
+  frame checks (magic, length, CRC-32) reject the packet, so at the
+  protocol level corruption is indistinguishable from loss; the fault
+  exists to exercise the rejection path end to end (INVARIANT H-04).
 
 ### 12.3 Disk model
 
@@ -675,6 +684,57 @@ Event::Restored carrying only durable state. This models the real failure
 that matters: a node that answered as if it had persisted, then lost the
 write. The core's persist-before-response rule (INVARIANT T-02) is the
 defense, and the crash-during-append seeds are its test.
+
+As built in post-M4 Lane 2: Restored also carries the durable
+snapshot's boundary when the driver holds a verified snapshot,
+and the core installs that boundary at restore before the node
+serves (invariant N-07). Before this, a restarted node's base
+never reflected its snapshot: the live install path needs a
+pending install, and the compaction path is bounded by a
+commit index that starts at zero on restore, so neither could
+fire at boot, and the recovered log prefix the snapshot had
+replaced was replayed as current state. The seed sweep found
+it as log-matching failures on restarted nodes whose disks
+held a snapshot (seed 129 and seven more in the first five
+hundred).
+
+The restore is suffix-shaped (invariant N-08). A store
+returns only the entries its durable snapshot does not cover,
+and the core advances the fresh log's base to the boundary
+before appending them, so every recovered entry lands at its
+absolute index. The simulated disk keeps its durable records
+whole, the same shape as the simraft-node file store's log
+file, but it tracks the boundary as its log base: the
+volatile log holds only entries above the base, the restore
+verifies the covered records and skips them, and a write
+after a snapshot fsync is stored at its own absolute index.
+Before this, the disk wrote entries by position from index 1,
+so the first persist after a snapshot install was shifted
+into the gap the snapshot covered, and a later crash restored
+the shifted bytes as a different log (seeds 137, 138, 291,
+399, 474 in the first five hundred). A rejected snapshot
+payload (H-06) is the one exception: nothing is covered then,
+and the driver restores the whole log from index 1.
+
+The driver compacts a node's log once its commit index runs sixteen
+entries past its snapshot base: it builds the snapshot from the state
+machine, loads it into the core, writes it to the disk, and completes
+the persist cycle with the fsync that steps Event::SnapshotPersisted,
+which is what advances the base. A follower whose next index falls to
+or below a leader's advanced base is then caught up by InstallSnapshot
+for real, not merely in the core's unit tests.
+
+The durable log is stored as section 7.3 log records (the same byte
+format the simraft-node file store writes), not as structured entries.
+Restoring decodes the records in index order and stops at the first bad
+record (bad magic, bad length, checksum mismatch, index out of
+sequence): that record and everything after it is a torn tail, dropped
+and reported with its byte offset, index, and expected versus actual
+CRC. A scenario can flip one byte in a chosen durable record or in the
+durable snapshot payload (post-M4 Lane 2). A corrupt snapshot payload
+fails its SHA-256 at restore and is rejected whole: the node replays
+its log instead, and its log base never advances over state the state
+machine does not hold (INVARIANTS H-05 and H-06).
 
 ### 12.4 Phases: chaos, then bounded healing
 
@@ -883,7 +943,11 @@ differ. Fourth, the leader append-only oracle binds within one
 leadership tenure: entries from an earlier tenure carry no
 guarantee, because as a follower the node may have them
 overwritten by the current leader (the seed sweep found this on
-seed 912). The CLI emits its JSON run summaries directly; the
+seed 912). Fifth, convergence compares logs semantically rather
+than by digest: nodes compact on their own schedules, so equal
+logs may end a run with different snapshot bases, and the check
+requires the same last index, a matching term at the higher
+base, and identical entries above it. The CLI emits its JSON run summaries directly; the
 only external crates in simraft-sim are clap, crc32fast, and
 sha2, as section 3 provides.
 
