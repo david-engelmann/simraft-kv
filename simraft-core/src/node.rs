@@ -420,8 +420,8 @@ impl Node {
         let pending = std::mem::take(&mut self.pending);
         for (index, held) in pending.into_iter().enumerate() {
             if !self.releasable(&held) {
-                let stale_send = matches!(held.action, Action::Send { .. })
-                    && held.term != self.current_term;
+                let stale_send =
+                    matches!(held.action, Action::Send { .. }) && held.term != self.current_term;
                 if !stale_send {
                     self.pending.push(held);
                 }
