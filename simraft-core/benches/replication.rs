@@ -10,11 +10,16 @@
 //! are wrapped in `black_box` and throughput is configured per
 //! group. Numbers land in the README only from a recorded run of
 //! this benchmark, never estimated.
+//!
+//! Post-M4 Lane 3 adds two measurements: `propose_commit_batch_32`,
+//! the before and after yardstick for leader batching (invariant
+//! B-02), and `catch_up_ten_thousand_entries`, the cost of
+//! bringing an empty follower up to a 10,000-entry log.
 
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use simraft_core::{
     Action, ClientId, ClusterConfig, Config, Event, LogIndex, Message, Node, NodeId, PersistKind,
     Role,
@@ -148,7 +153,9 @@ fn bench_replication(c: &mut Criterion) {
         });
         group.finish();
     }
+}
 
+fn bench_step_latency(c: &mut Criterion) {
     let mut group = c.benchmark_group("step_latency");
     group.bench_function("follower_append_entries", |b| {
         let mut nodes = cluster();
@@ -201,5 +208,100 @@ fn bench_replication(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_replication);
+fn bench_replication_batched(c: &mut Criterion) {
+    {
+        let mut group = c.benchmark_group("replication_batched");
+        group.throughput(Throughput::Elements(32));
+        group.bench_function("propose_commit_batch_32", |b| {
+            let mut nodes = cluster();
+            elect(&mut nodes, NodeId(1));
+            let mut seq = 0_u64;
+            b.iter(|| {
+                // Thirty-two proposals stepped back to back, then
+                // routed once: the persist release and the rounds
+                // it produces are the B-02 measurement.
+                let mut actions = Vec::new();
+                for _ in 0..32 {
+                    seq += 1;
+                    actions.extend(nodes.get_mut(&NodeId(1)).expect("leader exists").step(
+                        Event::Propose {
+                            client_id: ClientId(1),
+                            seq,
+                            payload: black_box(vec![1_u8; 32]),
+                        },
+                    ));
+                }
+                route(&mut nodes, NodeId(1), actions);
+                black_box(nodes.get(&NodeId(1)).expect("leader").commit_index())
+            });
+        });
+        group.finish();
+    }
+}
+
+fn bench_replication_catch_up(c: &mut Criterion) {
+    {
+        let mut group = c.benchmark_group("replication_catch_up");
+        group.throughput(Throughput::Elements(10_000));
+        group.sample_size(10);
+        group.bench_function("catch_up_ten_thousand_entries", |b| {
+            b.iter_batched(
+                || {
+                    let mut nodes = cluster();
+                    elect(&mut nodes, NodeId(1));
+                    // Fill the leader's log to 10,000 entries past
+                    // its NoOp, acknowledging each persist and
+                    // discarding the released sends: the followers
+                    // never see them and stay empty.
+                    for seq in 1..=10_000_u64 {
+                        let leader = nodes.get_mut(&NodeId(1)).expect("leader exists");
+                        leader.step(Event::Propose {
+                            client_id: ClientId(1),
+                            seq,
+                            payload: vec![1_u8; 32],
+                        });
+                        let last = leader.log().last_index();
+                        leader.step(Event::Persisted {
+                            kind: PersistKind::Entries,
+                            up_to_index: last,
+                        });
+                    }
+                    nodes
+                },
+                |mut nodes| {
+                    // Drive leader heartbeats until node 3 holds
+                    // the whole log.
+                    let target = nodes
+                        .get(&NodeId(1))
+                        .expect("leader exists")
+                        .log()
+                        .last_index();
+                    let mut now = 1_000_000_u64;
+                    for _ in 0..10_000 {
+                        now += 50;
+                        let actions = nodes
+                            .get_mut(&NodeId(1))
+                            .expect("leader exists")
+                            .step(Event::Tick { now });
+                        route(&mut nodes, NodeId(1), actions);
+                        if nodes.get(&NodeId(3)).expect("follower").log().last_index() == target {
+                            break;
+                        }
+                    }
+                    black_box(nodes.get(&NodeId(3)).expect("follower").log().last_index())
+                },
+                BatchSize::SmallInput,
+            );
+        });
+        group.finish();
+    }
+}
+
+criterion_group!(
+    benches,
+    bench_replication,
+    bench_step_latency,
+    bench_replication_batched,
+    bench_replication_catch_up
+);
 criterion_main!(benches);
