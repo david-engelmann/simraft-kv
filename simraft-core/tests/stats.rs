@@ -137,12 +137,15 @@ fn commit_one_proposal(nodes: &mut BTreeMap<NodeId, Node>) {
         .expect("leader exists")
         .log()
         .last_index();
-    actions.extend(nodes.get_mut(&NodeId(1)).expect("leader exists").step(
-        Event::Persisted {
-            kind: PersistKind::Entries,
-            up_to_index: last,
-        },
-    ));
+    actions.extend(
+        nodes
+            .get_mut(&NodeId(1))
+            .expect("leader exists")
+            .step(Event::Persisted {
+                kind: PersistKind::Entries,
+                up_to_index: last,
+            }),
+    );
     route(nodes, actions);
     // One heartbeat round so the followers learn the commit index
     // the leader reached on their acknowledgements.
@@ -202,7 +205,10 @@ fn an_elected_leader_reports_its_term_and_peer_progress() {
             "a new leader offers each follower its log from index 1"
         );
         assert_eq!(
-            stats.peers.get(&peer).map(|p| (p.next_index, p.match_index)),
+            stats
+                .peers
+                .get(&peer)
+                .map(|p| (p.next_index, p.match_index)),
             nodes.get(&NodeId(1)).expect("node exists").progress(peer),
             "the snapshot agrees with the progress accessor for {peer}"
         );
