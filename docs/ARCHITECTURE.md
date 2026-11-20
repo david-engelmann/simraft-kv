@@ -183,6 +183,21 @@ simulated (or real) durable store. The ordering contract is strict: a node
 emits no vote response, append response, or read response whose correctness
 depends on state that is not yet acknowledged durable (INVARIANT T-02).
 
+The release of held sends batches replication (INVARIANT B-02). A
+proposal appends its entries and builds one AppendEntries send per
+follower from that follower's next index, and the send is held until
+the entries are durable. When several proposals are stepped before
+the acknowledgement arrives, the acknowledgement releases all of
+their sends at once, and every send but the last to a follower is a
+retransmission of a prefix of the last. The release therefore emits
+only the last held AppendEntries send per follower and drops the
+rest. The last send covers every entry the earlier ones carried that
+the follower still needs, because a follower's next index only
+moves on real acknowledgements or rejection backoff, and any range
+it does not cover is re-offered by the next heartbeat or proposal.
+No proposal waits longer than the acknowledgement it already waits
+for, and no other send kind is coalesced.
+
 ### 4.2 Actions (outputs from the core)
 
 ```text

@@ -108,15 +108,20 @@ and 10,000 on the main branch.
 ## Benchmarks
 
 Measured with the criterion benches in this repository, recorded
-from a local run on 2026-11-16. A full propose and commit round
+from hosted runs on 2026-11-19. A full propose and commit round
 on a three-node cluster driven directly, one 32-byte entry per
-round, takes a median of 16.4 microseconds, about 60,900 rounds
-per second. A follower processing one AppendEntries message
-takes a median of 1.46 microseconds. The linearizability checker
-decided a generated history of 10,000 operations over 64 keys
-after visiting 10,000 states, one per operation, because the
-history is sequential per key. Reproduce with
-`cargo bench --workspace`.
+round, takes a median of 1.50 microseconds, about 668,000 rounds
+per second. A batch of 32 proposals released by one persist
+acknowledgement takes a median of 85.5 microseconds, about
+374,000 entries per second, where the same batch took 122
+microseconds before the release learned to coalesce its sends.
+A follower processing one AppendEntries message takes a median
+of 76 nanoseconds. A follower with an empty log catches up to a
+10,000-entry leader log in a median of 4.06 milliseconds. The
+linearizability checker decided a generated history of 100,000
+operations over 64 keys after visiting 100,000 states, one per
+operation, because the history is sequential per key. Reproduce
+with `cargo bench --workspace`.
 
 ## Where to read more
 

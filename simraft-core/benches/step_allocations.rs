@@ -96,7 +96,63 @@ fn leader() -> Node {
     node
 }
 
+/// Measure each event class once and print the counts, so a
+/// recorded run of this bench yields the values the L-03
+/// budgets are tightened against (the post-M4 Lane 3
+/// measurement protocol). The budgets themselves stay asserted
+/// inside the timed benches below.
+fn report_measured_counts() {
+    let mut tick_node = node(2);
+    let tick_count = allocations_around(|| {
+        tick_node.step(Event::Tick { now: 10 });
+    });
+    let mut vote_node = node(2);
+    let vote_count = allocations_around(|| {
+        vote_node.step(Event::Message {
+            from: NodeId(1),
+            msg: Message::RequestVote {
+                term: Term(1),
+                last_log_index: LogIndex::ZERO,
+                last_log_term: Term::ZERO,
+            },
+        });
+    });
+    let mut leader = leader();
+    leader.step(Event::Propose {
+        client_id: simraft_core::ClientId(1),
+        seq: 1,
+        payload: vec![3_u8; 16],
+    });
+    let last = leader.log().last_index();
+    let actions = leader.step(Event::Persisted {
+        kind: PersistKind::Entries,
+        up_to_index: last,
+    });
+    let message = actions
+        .iter()
+        .find_map(|a| match a {
+            simraft_core::Action::Send {
+                to,
+                msg: m @ Message::AppendEntries { .. },
+            } if *to == NodeId(2) => Some(m.clone()),
+            _ => None,
+        })
+        .expect("the leader sends AppendEntries");
+    let mut follower = node(2);
+    follower.step(Event::Tick { now: 500 });
+    let append_count = allocations_around(|| {
+        follower.step(Event::Message {
+            from: NodeId(1),
+            msg: message.clone(),
+        });
+    });
+    println!(
+        "step_allocations measured: tick={tick_count} request_vote={vote_count} append_entries_one={append_count} (budgets tick={TICK_BUDGET} vote={VOTE_BUDGET} append={APPEND_BUDGET})"
+    );
+}
+
 fn bench_step_allocations(c: &mut Criterion) {
+    report_measured_counts();
     let mut group = c.benchmark_group("step_allocations");
     group.bench_function("tick", |b| {
         let mut node = node(2);
