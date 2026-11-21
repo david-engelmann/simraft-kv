@@ -53,6 +53,41 @@ pub(crate) struct Progress {
     pub snapshot: Option<(LogIndex, Term, u64)>,
 }
 
+/// One peer's replication progress, as reported in a stats
+/// snapshot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PeerStats {
+    /// The index of the next entry to send this peer.
+    pub next_index: LogIndex,
+    /// The highest index known to be held contiguously by this peer.
+    pub match_index: LogIndex,
+}
+
+/// A node's whole operating state at one instant, as data.
+///
+/// Returned by `Node::stats`. Every field is the value the node's
+/// own accessor of the same meaning reports at the same instant,
+/// so a snapshot taken around a step explains the step.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NodeStats {
+    /// The role the node currently plays.
+    pub role: Role,
+    /// The node's current term.
+    pub current_term: Term,
+    /// The leader this node currently acknowledges, if any.
+    pub leader: Option<NodeId>,
+    /// The highest index known to be committed.
+    pub commit_index: LogIndex,
+    /// The highest index applied to the state machine.
+    pub last_applied: LogIndex,
+    /// The last index in the log.
+    pub last_log_index: LogIndex,
+    /// The log base: the index the latest snapshot covers.
+    pub snapshot_index: LogIndex,
+    /// Per-peer replication progress on a leader; empty otherwise.
+    pub peers: BTreeMap<NodeId, PeerStats>,
+}
+
 /// An action held back until the durable writes it depends on have been
 /// acknowledged (invariant T-02).
 #[derive(Debug, Clone)]
@@ -260,6 +295,45 @@ impl Node {
         self.progress
             .get(&peer)
             .map(|p| (p.next_index, p.match_index))
+    }
+
+    /// The node's whole operating state as data, for drivers,
+    /// dashboards, and tests (invariant O-01).
+    ///
+    /// The snapshot gathers the values the individual accessors
+    /// report at this instant into one comparable struct, so a
+    /// driver can log, diff, or assert on a node's state without
+    /// stepping it. The `peers` map carries a leader's replication
+    /// progress and is empty in every other role, where progress
+    /// is not tracked.
+    #[must_use]
+    pub fn stats(&self) -> NodeStats {
+        let peers = if self.role == Role::Leader {
+            self.progress
+                .iter()
+                .map(|(peer, progress)| {
+                    (
+                        *peer,
+                        PeerStats {
+                            next_index: progress.next_index,
+                            match_index: progress.match_index,
+                        },
+                    )
+                })
+                .collect()
+        } else {
+            BTreeMap::new()
+        };
+        NodeStats {
+            role: self.role,
+            current_term: self.current_term,
+            leader: self.leader_id,
+            commit_index: self.commit_index,
+            last_applied: self.last_applied,
+            last_log_index: self.log.last_index(),
+            snapshot_index: self.log.base_index(),
+            peers,
+        }
     }
 
     /// The next tick at which the driver must wake this node with an

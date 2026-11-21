@@ -38,5 +38,5 @@ pub use ids::{ClientId, LogIndex, NodeId, Term, Tick};
 pub use log::{EntryKind, Log, LogEntry};
 pub use membership::{ClusterConfig, ConfigChange, ConfigState};
 pub use message::Message;
-pub use node::{Node, Role};
+pub use node::{Node, NodeStats, PeerStats, Role};
 pub use snapshot::SnapshotMeta;
