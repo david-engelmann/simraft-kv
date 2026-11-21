@@ -125,6 +125,10 @@ with `cargo bench --workspace`.
 
 ## Where to read more
 
+- `simraft-core/examples/embed.rs` is a worked embedding of the
+  core in one file: three nodes, an in-memory transport, one
+  write read back on every node. Run it with
+  `cargo run -p simraft-core --example embed`.
 - `docs/ARCHITECTURE.md` is the full design, written to be argued
   with. It covers the protocol choices, the byte formats, the
   simulator design, and the alternatives that were considered and
