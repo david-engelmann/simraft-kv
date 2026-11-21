@@ -226,7 +226,14 @@ until their milestone lands.
 | A-03 | Restart recovery (LIV): a node restarted after falling behind rejoins, catches up, and serves the current state through its own address. | `simraft-node/tests/cluster_end_to_end.rs::restarted_node_catches_up`. | Lane 1 |
 | A-04 | Wire compatibility (INT): the adapter's peer transport carries section 7.1 frames byte for byte; a frame split at any byte boundary reassembles and decodes to exactly the encoded message. | `simraft-node/tests/frame_compat.rs::frames_reassemble_at_any_split` and `::back_to_back_frames_come_out_in_order`. | Lane 1 |
 
-## 11. How to read this matrix at a milestone gate
+## 11. Operability and embedding (post-M4 Lane 4)
+
+| ID | Invariant (one line, class) | Enforced by | Milestone |
+| --- | --- | --- | --- |
+| O-01 | Stats snapshot accuracy (DIA): `Node::stats` reports the node's role, current term, acknowledged leader, commit and applied indexes, last log index, and snapshot base exactly as the node's own accessors report them at the same instant, and on a leader it reports every peer's next and match indexes, agreeing with `Node::progress` peer by peer; a follower reports no peer progress. | `simraft-core/tests/stats.rs::a_fresh_node_reports_a_zeroed_follower_snapshot`, `::an_elected_leader_reports_its_term_and_peer_progress`, `::commit_and_applied_advance_together_on_leader_and_follower`, `::a_follower_reports_no_peer_progress`. | Lane 4 |
+| O-02 | Embedding example (INT): a single-file example embeds the core with an in-memory transport, writes through the leader, and reads the value back, using only the public API and no I/O. | `simraft-core/examples/embed.rs` compiles under the workspace gates; its recorded run is part of the Lane 4 Stage B report. | Lane 4 |
+
+## 12. How to read this matrix at a milestone gate
 
 For each milestone, the rows whose Milestone column names it (or an earlier
 milestone not yet landed) must have their named tests present, running, and

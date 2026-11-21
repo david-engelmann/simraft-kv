@@ -223,6 +223,14 @@ driver must wake it at) so the simulator can jump the virtual clock directly
 to the next timer or packet event instead of stepping millisecond by
 millisecond.
 
+A driver can also read the node's whole operating state as data without
+stepping it (INVARIANT O-01). `Node::stats` returns a `NodeStats`
+snapshot: role, current term, the acknowledged leader, commit and applied
+indexes, the last log index, the snapshot base, and, on a leader, every
+peer's next and match indexes. The snapshot gathers the individual
+accessors' values at one instant, so a driver can log or diff node state
+around a step.
+
 ### 4.3 Determinism rules inside the core
 
 - No iteration over HashMap or HashSet anywhere in simraft-core, simraft-kv,
