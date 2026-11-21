@@ -61,7 +61,8 @@ impl Driver {
         for action in actions {
             match action {
                 Action::Send { to, msg } => {
-                    self.queue.push_back((to, Event::Message { from: source, msg }));
+                    self.queue
+                        .push_back((to, Event::Message { from: source, msg }));
                 }
                 Action::PersistHardState { .. } => {
                     self.queue.push_back((
