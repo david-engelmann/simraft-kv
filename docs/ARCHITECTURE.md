@@ -166,7 +166,13 @@ base, and Action::ConfigResponse answers a ProposeConfig with a
 ConfigResult (Committed, NotLeader, or Rejected with the
 ProtocolError). A received snapshot installs only when its persist
 is acknowledged through Event::SnapshotPersisted, the same
-persist-before-effect shape as log entries. The node's
+persist-before-effect shape as log entries. The core emits
+Action::PersistSnapshot only for received installs. For a node's
+own compaction snapshot the driver completes the persist cycle
+itself: it writes the bytes to durable storage, installs them
+into its state machine, loads them into the core, and steps
+Event::SnapshotPersisted, on which the core advances the base
+(INVARIANT A-05 in the adapter, H-08 in the simulator). The node's
 configuration state is derived from the log by a single recompute
 pass after every log or commit mutation: the newest config entry in
 the log is the latest configuration, the newest at or below the

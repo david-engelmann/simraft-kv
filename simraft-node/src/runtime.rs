@@ -79,6 +79,7 @@ struct Driver {
     deferred_reads: Vec<(u64, Vec<u8>, LogIndex)>,
     next_request_id: u64,
     tick: u64,
+    pending_compaction: Option<(SnapshotMeta, Vec<u8>)>,
 }
 
 impl Driver {
@@ -97,7 +98,38 @@ impl Driver {
                 self.act(action, &mut queue)?;
             }
         }
+        // An apply during the drain may have planned a
+        // compaction; complete its persist cycle now that the
+        // core is quiescent.
+        if let Some((meta, data)) = self.pending_compaction.take() {
+            self.run_compaction(meta, data)?;
+        }
         Ok(())
+    }
+
+    /// Complete the persist cycle for this node's own
+    /// snapshot (invariant A-05): the core advances the base
+    /// on `SnapshotPersisted` and emits no `PersistSnapshot`
+    /// action for a node's own snapshot (that action is
+    /// reserved for received installs), so the driver writes
+    /// the bytes to the store, installs them into the
+    /// machine, loads them into the core, and steps the
+    /// acknowledgment itself, the same cycle the simulator's
+    /// harness completes in its own compaction path. Without
+    /// it the base never advances and no follower ever falls
+    /// behind it, which silently disarms the whole
+    /// `InstallSnapshot` relay in the adapter.
+    fn run_compaction(&mut self, meta: SnapshotMeta, data: Vec<u8>) -> Result<(), NodeError> {
+        let parts = decode_snapshot(&data).map_err(|e| NodeError::CorruptStore {
+            detail: format!("this node's own snapshot payload does not decode: {e}"),
+        })?;
+        self.store.write_snapshot(&meta, &data)?;
+        self.machine.install_snapshot(parts);
+        self.step(Event::SnapshotLoaded {
+            meta: meta.clone(),
+            data,
+        })?;
+        self.step(Event::SnapshotPersisted { meta })
     }
 
     fn act(&mut self, action: Action, queue: &mut VecDeque<Event>) -> Result<(), NodeError> {
@@ -133,7 +165,23 @@ impl Driver {
                 });
             }
             Action::PersistSnapshot { meta, data } => {
+                // The payload enters the state machine here,
+                // paired with the cursor jump the core makes
+                // on SnapshotPersisted: for a received snapshot
+                // the install is what the machine holds at
+                // all, and without it the machine would
+                // silently miss the snapshotted state while
+                // the core applies past it; for the node's own
+                // snapshot the install restores exactly the
+                // state the machine already holds (invariant
+                // A-05). The payload decodes before anything
+                // is persisted, so a corrupt snapshot is never
+                // written to the store or served onward.
+                let parts = decode_snapshot(&data).map_err(|e| NodeError::CorruptStore {
+                    detail: format!("a snapshot payload from the core does not decode: {e}"),
+                })?;
                 self.store.write_snapshot(&meta, &data)?;
+                self.machine.install_snapshot(parts);
                 queue.push_back(Event::SnapshotPersisted { meta });
             }
             Action::LoadSnapshot { meta } => {
@@ -142,7 +190,7 @@ impl Driver {
                 }
             }
             Action::Apply { index, entry } => {
-                self.apply_entry(index, &entry, queue);
+                self.apply_entry(index, &entry);
             }
             Action::ReadReady {
                 request_id,
@@ -190,12 +238,7 @@ impl Driver {
     /// Apply one committed entry to the state machine, record
     /// the client outcome it carries, and run the follow-on
     /// work an apply can unblock.
-    fn apply_entry(
-        &mut self,
-        index: LogIndex,
-        entry: &simraft_core::LogEntry,
-        queue: &mut VecDeque<Event>,
-    ) {
+    fn apply_entry(&mut self, index: LogIndex, entry: &simraft_core::LogEntry) {
         if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
             let key = (*client_id, *seq);
             if let Ok(ApplyOutcome::Applied { result } | ApplyOutcome::Cached { result }) =
@@ -208,8 +251,8 @@ impl Driver {
         }
         self.try_complete_writes();
         self.serve_deferred_reads();
-        if let Some(event) = self.compaction_event() {
-            queue.push_back(event);
+        if let Some(plan) = self.compaction_plan() {
+            self.pending_compaction = Some(plan);
         }
     }
 
@@ -283,10 +326,12 @@ impl Driver {
         self.deferred_reads = still;
     }
 
-    /// The compaction step for the current state, when the
+    /// The compaction plan for the current state, when the
     /// log past the base has reached the threshold and the
-    /// machine has applied through the commit index.
-    fn compaction_event(&self) -> Option<Event> {
+    /// machine has applied through the commit index: the
+    /// snapshot identity and payload the driver persists and
+    /// installs once the core goes quiescent.
+    fn compaction_plan(&self) -> Option<(SnapshotMeta, Vec<u8>)> {
         let commit = self.node.commit_index();
         let base = self.node.log().base_index();
         if commit <= base
@@ -308,10 +353,7 @@ impl Driver {
             last_included_term: term,
             config: self.node.cluster().clone(),
         };
-        Some(Event::SnapshotLoaded {
-            meta,
-            data: encode_snapshot(&parts),
-        })
+        Some((meta, encode_snapshot(&parts)))
     }
 
     fn handle(&mut self, inbox: Inbox) -> Result<(), NodeError> {
@@ -475,6 +517,7 @@ pub fn run_node(config: &NodeConfig) -> Result<(), NodeError> {
         deferred_reads: Vec::new(),
         next_request_id: 1,
         tick: 0,
+        pending_compaction: None,
     };
     {
         let tx = inbox_tx.clone();
