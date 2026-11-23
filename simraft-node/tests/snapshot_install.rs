@@ -27,7 +27,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_simraft-node");
 const WRITES: u32 = 140;
 
 /// A running cluster of three node processes on ephemeral
-/// ports, modeled on cluster_end_to_end.rs.
+/// ports, modeled on `cluster_end_to_end.rs`.
 struct Cluster {
     children: Vec<Child>,
     addrs: Vec<String>,
@@ -212,8 +212,8 @@ fn snapshot_receiver_serves_snapshotted_state_after_promotion() {
     // must lead the re-formed cluster.
     cluster.kill(0);
     cluster.kill(1);
-    for index in 0..2 {
-        std::fs::remove_dir_all(&cluster.dirs[index]).expect("wipe a member data dir");
+    for dir in cluster.dirs.iter().take(2) {
+        std::fs::remove_dir_all(dir).expect("wipe a member data dir");
     }
     cluster.restart(0);
     cluster.restart(1);
