@@ -225,6 +225,7 @@ until their milestone lands.
 | A-02 | Failover read freshness (LIN): after a leader is killed and a successor elected, a read through any surviving member returns the latest committed value, never an older one. | `simraft-node/tests/cluster_end_to_end.rs::read_after_failover_returns_latest_committed`. | Lane 1 |
 | A-03 | Restart recovery (LIV): a node restarted after falling behind rejoins, catches up, and serves the current state through its own address. | `simraft-node/tests/cluster_end_to_end.rs::restarted_node_catches_up`. | Lane 1 |
 | A-04 | Wire compatibility (INT): the adapter's peer transport carries section 7.1 frames byte for byte; a frame split at any byte boundary reassembles and decodes to exactly the encoded message. | `simraft-node/tests/frame_compat.rs::frames_reassemble_at_any_split` and `::back_to_back_frames_come_out_in_order`. | Lane 1 |
+| A-05 | Received snapshot installation (SAF): a node that catches up through a leader snapshot serves the snapshotted keys from its own running state machine, with no restart in between; the boot path is not the only route by which snapshot contents reach the machine. | `simraft-node/tests/snapshot_install.rs::snapshot_receiver_serves_snapshotted_state_after_promotion`. | Snapshot-install lane |
 
 ## 11. Operability and embedding (post-M4 Lane 4)
 
