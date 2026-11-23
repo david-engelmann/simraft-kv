@@ -224,8 +224,7 @@ fn snapshot_receiver_serves_snapshotted_state_after_promotion() {
         first, "v0001",
         "A-05: the snapshot receiver serves a snapshotted key from its own machine"
     );
-    let middle =
-        client_get(&cluster.addrs[2], "key-0100").expect("the promoted node serves reads");
+    let middle = client_get(&cluster.addrs[2], "key-0100").expect("the promoted node serves reads");
     assert_eq!(
         middle, "v0100",
         "A-05: the snapshot receiver serves a snapshotted key from its own machine"
