@@ -3,8 +3,10 @@
 //! (docs/INVARIANTS.md section 10). The scenario crosses the
 //! adapter's compaction threshold while one member is down,
 //! so the member's only route back is a snapshot, then wipes
-//! the other two members so the snapshot receiver is the only
-//! node holding the committed state and must lead. Reads are
+//! one of the other members and leaves the third down, so
+//! the only majority the re-formed cluster can reach
+//! includes the snapshot receiver and its complete log must
+//! lead. Reads are
 //! then served from the receiver's own machine: the client
 //! follows redirects, so only a leader's machine is ever read,
 //! and promoting the receiver is what makes its machine the
@@ -88,8 +90,13 @@ impl Cluster {
     /// through the client contract as the end-to-end suite
     /// does.
     fn wait_ready(&mut self) {
+        self.wait_ready_some(&[0, 1, 2]);
+    }
+
+    /// Wait until the given node processes are serving.
+    fn wait_ready_some(&mut self, indices: &[usize]) {
         let deadline = Instant::now() + Duration::from_secs(30);
-        for i in 0..self.children.len() {
+        for &i in indices {
             loop {
                 assert!(
                     Instant::now() < deadline,
@@ -207,17 +214,17 @@ fn snapshot_receiver_serves_snapshotted_state_after_promotion() {
     client_put(&cluster.addrs[0], "probe", "after-snapshot").expect("the cluster is healthy");
     std::thread::sleep(Duration::from_millis(500));
 
-    // Promote the receiver: wipe the other two members so
-    // the receiver's log is the only complete one and it
-    // must lead the re-formed cluster.
+    // Promote the receiver: wipe one of the other members
+    // and leave the third down, so the only majority the
+    // re-formed cluster can reach includes the receiver,
+    // whose complete log must lead it. (Wiping both would
+    // let the two fresh members elect each other on empty
+    // logs and serve reads from an empty machine.)
     cluster.kill(0);
     cluster.kill(1);
-    for dir in cluster.dirs.iter().take(2) {
-        std::fs::remove_dir_all(dir).expect("wipe a member data dir");
-    }
-    cluster.restart(0);
+    std::fs::remove_dir_all(&cluster.dirs[1]).expect("wipe a member data dir");
     cluster.restart(1);
-    cluster.wait_ready();
+    cluster.wait_ready_some(&[1, 2]);
 
     let first = client_get(&cluster.addrs[2], "key-0001").expect("the promoted node serves reads");
     assert_eq!(
@@ -235,7 +242,7 @@ fn snapshot_receiver_serves_snapshotted_state_after_promotion() {
         "A-05: entries applied past the snapshot boundary still serve"
     );
     client_put(&cluster.addrs[2], "fresh", "after-promotion").expect("the promoted node leads");
-    let fresh = client_get(&cluster.addrs[0], "fresh").expect("the re-formed cluster serves");
+    let fresh = client_get(&cluster.addrs[1], "fresh").expect("the re-formed cluster serves");
     assert_eq!(
         fresh, "after-promotion",
         "A-05: the re-formed cluster keeps serving new writes"
