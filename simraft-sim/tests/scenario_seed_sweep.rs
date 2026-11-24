@@ -49,6 +49,19 @@ fn assert_passed(report: &RunReport, scenario: &str, seed: u64) {
     );
 }
 
+/// The seeds a scenario runs at: its original seed plus a
+/// batch of swept seeds from `batch_base`. The weekly sweep
+/// sets SIM_SWEEP_WIDE=1 to widen every batch from 7 to 100
+/// seeds; the per-pull-request suite keeps the small batch
+/// so its runtime stays bounded.
+fn sweep_seeds(original: u64, batch_base: u64) -> Vec<u64> {
+    let wide = std::env::var("SIM_SWEEP_WIDE").is_ok_and(|value| value == "1");
+    let batch: u64 = if wide { 100 } else { 7 };
+    let mut seeds = vec![original];
+    seeds.extend((0..batch).map(|offset| batch_base + offset));
+    seeds
+}
+
 /// H-04: the frame corruption scenario's configuration at
 /// any seed (300 per mille corruption, crash and clock
 /// faults off, as the original scenario documents).
@@ -68,7 +81,7 @@ fn frame_corruption_config(seed: u64) -> SimConfig {
 
 #[test]
 fn frame_corruption_holds_across_swept_seeds() {
-    for seed in [77, 7700, 7701, 7702, 7703, 7704, 7705, 7706] {
+    for seed in sweep_seeds(77, 7700) {
         let report = Harness::new(frame_corruption_config(seed)).run();
         assert!(
             trace_count(&report, "frame_corrupted") > 0,
@@ -103,7 +116,7 @@ fn log_corruption_config(seed: u64) -> SimConfig {
 
 #[test]
 fn log_corruption_holds_across_swept_seeds() {
-    for seed in [78, 7800, 7801, 7802, 7803, 7804, 7805, 7806] {
+    for seed in sweep_seeds(78, 7800) {
         let report = Harness::new(log_corruption_config(seed)).run();
         assert!(
             trace_has(&report, "corrupt_log n3 index 5 flipped=true"),
@@ -155,7 +168,7 @@ fn snapshot_corruption_config(seed: u64) -> SimConfig {
 
 #[test]
 fn snapshot_corruption_holds_across_swept_seeds() {
-    for seed in [79, 7900, 7901, 7902, 7903, 7904, 7905, 7906] {
+    for seed in sweep_seeds(79, 7900) {
         let report = Harness::new(snapshot_corruption_config(seed)).run();
         assert!(
             trace_has(&report, "corrupt_snapshot n3 flipped=true"),
@@ -189,7 +202,7 @@ fn rolling_restart_config(seed: u64) -> SimConfig {
 
 #[test]
 fn rolling_restart_holds_across_swept_seeds() {
-    for seed in [80, 8000, 8001, 8002, 8003, 8004, 8005, 8006] {
+    for seed in sweep_seeds(80, 8000) {
         let report = Harness::new(rolling_restart_config(seed)).run();
         assert_passed(&report, "rolling restart", seed);
         let completed = report
@@ -246,7 +259,7 @@ fn partition_snapshot_holds_across_swept_seeds() {
     // compaction threshold. The original seed's per-seed
     // evidence stays pinned by the scenario's own file.
     let mut any_snapshot_received = false;
-    for seed in [81, 8100, 8101, 8102, 8103, 8104, 8105, 8106] {
+    for seed in sweep_seeds(81, 8100) {
         let report = Harness::new(partition_snapshot_config(seed)).run();
         any_snapshot_received |= trace_has(&report, "snapshot_received n3");
         assert_passed(&report, "partition snapshot", seed);
@@ -290,7 +303,7 @@ fn learner_catchup_config(seed: u64) -> SimConfig {
 
 #[test]
 fn learner_catchup_holds_across_swept_seeds() {
-    for seed in [82, 8200, 8201, 8202, 8203, 8204, 8205, 8206] {
+    for seed in sweep_seeds(82, 8200) {
         let report = Harness::new(learner_catchup_config(seed)).run();
         assert_passed(&report, "learner catch-up", seed);
         let learner_applied = report

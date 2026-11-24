@@ -8,6 +8,11 @@ name: Weekly seed sweep (100,000 seeds)
 # exit on any failed seed). A failing shard names its seed
 # range, and any failing seed replays locally with that single
 # value.
+#
+# The scenario-sweep job runs the Lane 2 adversarial scenarios
+# under widened seed batches (SIM_SWEEP_WIDE=1: the original
+# seed plus 100 swept seeds per scenario, in release), the
+# volume tranche of the scenario seed-sweep lane.
 
 on:
   schedule:
@@ -46,3 +51,17 @@ jobs:
               --seed "$base" --seeds "$step" --json > "sweep-$base.json"
             head -1 "sweep-$base.json"
           done
+
+  scenario-sweep:
+    name: Lane 2 scenarios, wide seed batches
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+      - name: Run the scenario seed sweep wide
+        run: SIM_SWEEP_WIDE=1 cargo test --release -p simraft-sim --test scenario_seed_sweep
