@@ -51,7 +51,7 @@ fn assert_passed(report: &RunReport, scenario: &str, seed: u64) {
 
 /// The seeds a scenario runs at: its original seed plus a
 /// batch of swept seeds from `batch_base`. The weekly sweep
-/// sets SIM_SWEEP_WIDE=1 to widen every batch from 7 to 100
+/// sets `SIM_SWEEP_WIDE=1` to widen every batch from 7 to 100
 /// seeds; the per-pull-request suite keeps the small batch
 /// so its runtime stays bounded.
 fn sweep_seeds(original: u64, batch_base: u64) -> Vec<u64> {
