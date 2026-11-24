@@ -384,13 +384,13 @@ mod tests {
         }
     }
 
-    fn view<'a>(
+    fn view(
         id: u64,
         role: Role,
         term: u64,
-        entries: &'a [LogEntry],
+        entries: &[LogEntry],
         commit_index: u64,
-    ) -> NodeView<'a> {
+    ) -> NodeView<'_> {
         NodeView {
             id: NodeId(id),
             role,
