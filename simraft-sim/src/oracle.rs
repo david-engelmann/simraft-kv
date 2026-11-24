@@ -261,6 +261,20 @@ fn leader_completeness(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
             continue;
         }
         for (index, term) in &committed {
+            // The property binds leaders of higher terms than
+            // the committing term (the S-04 statement above). A
+            // leader still sitting in a lower term predates the
+            // commit: partitioned away, it cannot know the entry
+            // exists, and it cannot commit anything of its own
+            // without a majority, so nothing is lost by the
+            // entry's absence from its log. Requiring it here
+            // made the oracle claim more than Raft guarantees
+            // (found by the scenario seed sweep: at seeds 7900
+            // and 8100 node 3 leads term 1 in isolation while
+            // the majority commits in term 2).
+            if *term >= view.current_term {
+                continue;
+            }
             // Entries at or below the leader's snapshot base are
             // held by its snapshot, not its log: below the base the
             // snapshot covers them by construction, and at the base
@@ -356,4 +370,70 @@ fn structural(views: &[NodeView<'_>], state: &mut OracleState) -> Result<(), Ora
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use simraft_core::EntryKind;
+
+    fn entry(term: u64) -> LogEntry {
+        LogEntry {
+            term: Term(term),
+            kind: EntryKind::NoOp,
+        }
+    }
+
+    fn view<'a>(
+        id: u64,
+        role: Role,
+        term: u64,
+        entries: &'a [LogEntry],
+        commit_index: u64,
+    ) -> NodeView<'a> {
+        NodeView {
+            id: NodeId(id),
+            role,
+            current_term: Term(term),
+            base_index: LogIndex::ZERO,
+            base_term: Term::ZERO,
+            entries,
+            commit_index: LogIndex(commit_index),
+            last_applied: LogIndex::ZERO,
+            applied: &[],
+            match_indexes: &[],
+        }
+    }
+
+    /// S-04 binds leaders of higher terms than the committing
+    /// term only: a partitioned leader still sitting in term 1
+    /// is not required to hold an entry the majority committed
+    /// in term 2 (scenario seed sweep, seeds 7900 and 8100).
+    #[test]
+    fn stale_lower_term_leader_is_not_flagged() {
+        let committed = [entry(2)];
+        let empty: [LogEntry; 0] = [];
+        let views = [
+            view(1, Role::Follower, 2, &committed, 1),
+            view(2, Role::Follower, 2, &committed, 1),
+            view(3, Role::Leader, 1, &empty, 0),
+        ];
+        assert!(leader_completeness(&views).is_ok());
+    }
+
+    /// A leader of a higher term that is missing a committed
+    /// entry is exactly the violation S-04 exists to catch.
+    #[test]
+    fn higher_term_leader_missing_a_committed_entry_is_flagged() {
+        let committed = [entry(2)];
+        let empty: [LogEntry; 0] = [];
+        let views = [
+            view(1, Role::Follower, 2, &committed, 1),
+            view(2, Role::Leader, 3, &empty, 0),
+        ];
+        match leader_completeness(&views) {
+            Ok(()) => panic!("the higher-term leader must be flagged"),
+            Err(violation) => assert_eq!(violation.oracle, "leader_completeness"),
+        }
+    }
 }
