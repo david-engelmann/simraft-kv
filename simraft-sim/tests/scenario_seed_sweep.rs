@@ -232,8 +232,11 @@ fn partition_snapshot_holds_across_swept_seeds() {
              (H-08 evidence), not merely catch up by appends"
         );
         assert_passed(&report, "partition snapshot", seed);
-        let applied: Vec<LogIndex> =
-            report.final_applied.iter().map(|(_, index)| *index).collect();
+        let applied: Vec<LogIndex> = report
+            .final_applied
+            .iter()
+            .map(|(_, index)| *index)
+            .collect();
         assert!(
             applied.iter().all(|index| *index == applied[0]),
             "partition snapshot seed {seed}: every node ends at the same applied index: \
