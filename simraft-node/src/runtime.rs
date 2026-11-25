@@ -726,14 +726,19 @@ mod tests {
     /// so its machine stands past the first log indexes with
     /// no snapshot in the store.
     fn applied_driver() -> (Driver, PathBuf) {
-        let dir = std::env::temp_dir().join(format!(
-            "simraft-node-fence-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("simraft-node-fence-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let (store, _recovery) = FileStore::open(&dir).expect("store opens");
+        let (store, recovery) = FileStore::open(&dir).expect("store opens");
         let cluster = ClusterConfig::new([NodeId(1)], Vec::new()).expect("cluster validates");
-        let node = Node::new(NodeId(1), Config::default(), cluster, 7).expect("node builds");
+        let config = Config {
+            heartbeat_interval: 5,
+            min_election_timeout: 50,
+            max_election_timeout: 100,
+            ..Config::default()
+        };
+        let node =
+            Node::new(NodeId(1), config, cluster, 0x9E37_79B9_7F4A_7C15 + 1).expect("node builds");
         let mut driver = Driver {
             id: NodeId(1),
             node,
@@ -750,6 +755,13 @@ mod tests {
             tick: 0,
             pending_compaction: None,
         };
+        driver
+            .step(Event::Restored {
+                hard_state: recovery.hard_state,
+                entries: recovery.entries,
+                snapshot: recovery.snapshot.map(|(meta, _)| meta),
+            })
+            .expect("restore steps");
         driver
             .step(Event::Tick { now: 1_000_000 })
             .expect("election tick steps");
@@ -789,11 +801,7 @@ mod tests {
             "the driver must stand past an earlier boundary, applied {applied}"
         );
         assert!(
-            driver
-                .store
-                .read_snapshot()
-                .expect("store reads")
-                .is_none(),
+            driver.store.read_snapshot().expect("store reads").is_none(),
             "the test exercises the rebuild path, so the store holds no snapshot"
         );
         let cluster = driver.node.cluster().clone();
