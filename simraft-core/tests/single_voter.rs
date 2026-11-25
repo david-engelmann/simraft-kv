@@ -28,8 +28,7 @@ fn drive(node: &mut Node, actions: Vec<Action>) {
                 from_index,
                 entries,
             } => {
-                let last =
-                    LogIndex(from_index.0 + u64::try_from(entries.len() - 1).unwrap_or(0));
+                let last = LogIndex(from_index.0 + u64::try_from(entries.len() - 1).unwrap_or(0));
                 queue.extend(node.step(Event::Persisted {
                     kind: PersistKind::Entries,
                     up_to_index: last,
@@ -47,7 +46,8 @@ fn drive(node: &mut Node, actions: Vec<Action>) {
 fn single_voter_leader_commits_and_applies() {
     let cluster = ClusterConfig::new([NodeId(1)], Vec::new()).expect("cluster validates");
     let mut node = Node::new(NodeId(1), Config::default(), cluster, 7).expect("node builds");
-    drive(&mut node, node.step(Event::Tick { now: 1_000_000 }));
+    let boot = node.step(Event::Tick { now: 1_000_000 });
+    drive(&mut node, boot);
     assert_eq!(
         node.role(),
         Role::Leader,
