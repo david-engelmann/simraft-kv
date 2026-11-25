@@ -1312,17 +1312,10 @@ impl Node {
                 _ => None,
             };
             let applied_command = match &entry.kind {
-                EntryKind::Command {
-                    client_id, seq, ..
-                } => Some((*client_id, *seq)),
+                EntryKind::Command { client_id, seq, .. } => Some((*client_id, *seq)),
                 _ => None,
             };
-            self.defer_or_emit(
-                out,
-                Action::Apply { index, entry },
-                0,
-                index,
-            );
+            self.defer_or_emit(out, Action::Apply { index, entry }, 0, index);
             if let Some(config) = applied_config {
                 self.on_config_applied(index, &config, out);
             }
