@@ -60,4 +60,10 @@ Rust callers issuing multiple operations from one process can use
 counter across calls, or `simraft_node::run_client` for single
 operations with unique per-call session identifiers.
 
-Licensed under either of MIT or Apache-2.0 at your option.
+## Documentation
+
+- [Architecture specification](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md)
+- [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md)
+- [API reference on docs.rs](https://docs.rs/simraft-node)
+
+Licensed under either of [MIT](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-APACHE) at your option.

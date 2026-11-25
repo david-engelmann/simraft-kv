@@ -24,7 +24,8 @@ sockets before allocating buffer space for the body.
 
 ## Documentation
 
-Full byte-level field tables live in `docs/ARCHITECTURE.md` in the
-`simraft-kv` repository.
+- [Architecture specification and byte tables](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md)
+- [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md)
+- [API reference on docs.rs](https://docs.rs/simraft-wire)
 
-Licensed under either of MIT or Apache-2.0 at your option.
+Licensed under either of [MIT](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-APACHE) at your option.

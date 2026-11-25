@@ -22,8 +22,8 @@ nothing outside `simraft-core` and the Rust standard library.
 
 ## Documentation
 
-The full design and invariant traceability matrix live in
-`docs/ARCHITECTURE.md` and `docs/INVARIANTS.md` in the workspace
-repository.
+- [Architecture specification](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md)
+- [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md)
+- [API reference on docs.rs](https://docs.rs/simraft-kv)
 
-Licensed under either of MIT or Apache-2.0 at your option.
+Licensed under either of [MIT](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-APACHE) at your option.

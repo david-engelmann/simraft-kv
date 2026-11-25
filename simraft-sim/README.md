@@ -35,4 +35,10 @@ run prints its seed on the first output line and exits nonzero if
 any safety oracle, healing convergence check, or linearizability
 verdict fails.
 
-Licensed under either of MIT or Apache-2.0 at your option.
+## Documentation
+
+- [Architecture specification](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md)
+- [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md)
+- [API reference on docs.rs](https://docs.rs/simraft-sim)
+
+Licensed under either of [MIT](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-APACHE) at your option.
