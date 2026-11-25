@@ -269,14 +269,22 @@ impl Driver {
 
     /// The snapshot payload for `meta`: the durable copy when
     /// it matches, otherwise rebuilt from the state machine
-    /// (the simulator's harness makes the same fallback).
+    /// (the simulator's harness makes the same fallback). The
+    /// rebuild is fenced to the boundary the machine is
+    /// standing on (invariant A-06): `snapshot_parts` dumps the
+    /// machine's current state, so serving a rebuild for an
+    /// earlier boundary would label later store and session
+    /// state with that earlier index, and a follower installing
+    /// it would diverge when the intervening entries replay.
     fn snapshot_bytes(&self, meta: &SnapshotMeta) -> Option<Vec<u8>> {
         if let Ok(Some((stored, data))) = self.store.read_snapshot()
             && stored == *meta
         {
             return Some(data);
         }
-        if self.node.log().term_at(meta.last_included_index).is_some() {
+        if self.node.last_applied() == meta.last_included_index
+            && self.node.log().term_at(meta.last_included_index).is_some()
+        {
             let parts = self.machine.snapshot_parts(
                 meta.last_included_index,
                 meta.last_included_term,
@@ -705,5 +713,193 @@ fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: Sender<Inbox>) {
             Ok(0) | Err(_) => return,
             Ok(n) => frames.push(&chunk[..n]),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use simraft_core::{ClusterConfig, Role, Term};
+
+    /// Deliver any frames the driver addressed to itself back
+    /// into it as messages. The core's sends to its own id
+    /// (its pre-vote and vote in an election it runs) have no
+    /// peer thread to carry them in this harness.
+    fn pump(driver: &mut Driver, inbox: &Receiver<Vec<u8>>) {
+        while let Ok(frame) = inbox.try_recv() {
+            let (from, _to, msg) = decode_frame(&frame).expect("self frame decodes");
+            driver
+                .step(Event::Message { from, msg })
+                .expect("self message steps");
+        }
+    }
+
+    /// Step one scripted peer message into the driver.
+    fn peer(driver: &mut Driver, from: NodeId, msg: Message) {
+        driver
+            .step(Event::Message { from, msg })
+            .expect("peer message steps");
+    }
+
+    /// Build a driver for the leader of a three-voter cluster
+    /// in a fresh store directory and drive it through an
+    /// election and a handful of applied puts, so its machine
+    /// stands past the first log indexes with no snapshot in
+    /// the store. The two peers are scripted responses, not
+    /// drivers: their pre-vote, vote, and append responses are
+    /// what the core's commit rule counts, so the leader's
+    /// applies arrive through the same path as a live
+    /// cluster's.
+    fn applied_driver() -> (Driver, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("simraft-node-fence-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (store, recovery) = FileStore::open(&dir).expect("store opens");
+        let cluster = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+            .expect("cluster validates");
+        let config = Config {
+            heartbeat_interval: 5,
+            min_election_timeout: 50,
+            max_election_timeout: 100,
+            ..Config::default()
+        };
+        let node =
+            Node::new(NodeId(1), config, cluster, 0x9E37_79B9_7F4A_7C15 + 1).expect("node builds");
+        let (sender, inbox) = channel::<Vec<u8>>();
+        let mut driver = Driver {
+            id: NodeId(1),
+            node,
+            machine: KvStateMachine::new(SESSION_CAPACITY),
+            store,
+            members: BTreeMap::new(),
+            senders: BTreeMap::from([(NodeId(1), sender)]),
+            pending_writes: BTreeMap::new(),
+            committed: BTreeSet::new(),
+            outcomes: BTreeMap::new(),
+            pending_reads: BTreeMap::new(),
+            deferred_reads: Vec::new(),
+            next_request_id: 1,
+            tick: 0,
+            pending_compaction: None,
+        };
+        driver
+            .step(Event::Restored {
+                hard_state: recovery.hard_state,
+                entries: recovery.entries,
+                snapshot: recovery.snapshot.map(|(meta, _)| meta),
+            })
+            .expect("restore steps");
+        driver
+            .step(Event::Tick { now: 1_000_000 })
+            .expect("election tick steps");
+        pump(&mut driver, &inbox);
+        let term = driver.node.current_term();
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::RequestPreVoteResponse {
+                term,
+                vote_granted: true,
+            },
+        );
+        pump(&mut driver, &inbox);
+        let term = driver.node.current_term();
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::RequestVoteResponse {
+                term,
+                vote_granted: true,
+            },
+        );
+        pump(&mut driver, &inbox);
+        assert_eq!(
+            driver.node.role(),
+            Role::Leader,
+            "the scripted election must seat the leader"
+        );
+        for seq in 1..=4_u64 {
+            let payload = encode_command(
+                ClientId(7),
+                seq,
+                &KvOp::Put {
+                    key: format!("key-{seq}").into_bytes(),
+                    value: format!("value-{seq}").into_bytes(),
+                },
+            );
+            driver
+                .step(Event::Propose {
+                    client_id: ClientId(7),
+                    seq,
+                    payload,
+                })
+                .expect("proposal steps");
+        }
+        let term = driver.node.current_term();
+        let last = driver.node.log().last_index();
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::AppendEntriesResponse {
+                term,
+                success: true,
+                match_index: last,
+                conflict_index: LogIndex::ZERO,
+                conflict_term: Term::ZERO,
+                read_round: 0,
+            },
+        );
+        (driver, dir)
+    }
+
+    /// Invariant A-06: a rebuilt snapshot payload is served
+    /// only for the boundary the machine is standing on. A
+    /// request for an earlier boundary the machine has already
+    /// applied past must get no payload, never the machine's
+    /// later state relabeled with the earlier index, because a
+    /// follower installing that payload would diverge from
+    /// the log it is about to replay.
+    #[test]
+    fn snapshot_rebuild_never_serves_later_state_under_an_earlier_boundary() {
+        let (driver, dir) = applied_driver();
+        let applied = driver.node.last_applied();
+        assert!(
+            applied.0 >= 3,
+            "the driver must stand past an earlier boundary, applied {applied}"
+        );
+        assert!(
+            driver.store.read_snapshot().expect("store reads").is_none(),
+            "the test exercises the rebuild path, so the store holds no snapshot"
+        );
+        let cluster = driver.node.cluster().clone();
+        let earlier = LogIndex(applied.0 - 2);
+        let earlier_meta = SnapshotMeta {
+            last_included_index: earlier,
+            last_included_term: driver
+                .node
+                .log()
+                .term_at(earlier)
+                .expect("the earlier index has a term"),
+            config: cluster.clone(),
+        };
+        assert!(
+            driver.snapshot_bytes(&earlier_meta).is_none(),
+            "no payload may be served for a boundary the machine has applied past"
+        );
+        let exact_meta = SnapshotMeta {
+            last_included_index: applied,
+            last_included_term: driver
+                .node
+                .log()
+                .term_at(applied)
+                .expect("the applied index has a term"),
+            config: cluster,
+        };
+        let bytes = driver
+            .snapshot_bytes(&exact_meta)
+            .expect("the boundary the machine stands on is served");
+        let parts = decode_snapshot(&bytes).expect("the served payload decodes");
+        assert_eq!(parts.last_included_index, applied);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
