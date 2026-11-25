@@ -530,6 +530,14 @@ impl Node {
             }
         }
         self.flush_pending(out);
+        // R-06: the leader's own durable replica counts
+        // toward its quorum, so commitment also advances on
+        // the persist ack. A cluster of one voter has no
+        // follower responses to wait for; without this, its
+        // leader appends and persists but never commits.
+        if self.role == Role::Leader {
+            self.advance_commit(out);
+        }
     }
 
     fn on_restored(
@@ -1265,7 +1273,11 @@ impl Node {
             .iter()
             .map(|&v| {
                 if v == self.id {
-                    self.log.last_index().0
+                    // The leader counts its own replica at its
+                    // durable bound, never at the log's tail:
+                    // an entry it has not persisted is not yet
+                    // a vote for commitment.
+                    self.entries_durable_up_to.0
                 } else {
                     self.progress.get(&v).map_or(0, |p| p.match_index.0)
                 }
