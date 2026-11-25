@@ -154,15 +154,13 @@ pub struct Node {
     pub(crate) last_read_round: u64,
     pub(crate) inflight: BTreeMap<(ClientId, u64), LogIndex>,
     pub(crate) attached: BTreeMap<LogIndex, u64>,
-    #[allow(
-        dead_code,
-        reason = "M3 Stage A contract state; the Stage B chunk handler consumes it"
-    )]
     pub(crate) incoming_snapshot: Option<IncomingSnapshot>,
     pub(crate) loaded_snapshot: Option<LoadedSnapshot>,
     pub(crate) hard_gen_sent: u64,
     pub(crate) hard_gen_acked: u64,
     pub(crate) entries_durable_up_to: LogIndex,
+    pub(crate) unacked_entry_persists: u64,
+    pub(crate) stale_entry_acks: u64,
 }
 
 impl Node {
@@ -219,6 +217,8 @@ impl Node {
             hard_gen_sent: 0,
             hard_gen_acked: 0,
             entries_durable_up_to: LogIndex::ZERO,
+            unacked_entry_persists: 0,
+            stale_entry_acks: 0,
         };
         node.reset_election_deadline();
         Ok(node)
@@ -427,6 +427,22 @@ impl Node {
         self.hard_gen_sent
     }
 
+    /// Emit a log-entries persist action and count it in flight so
+    /// pre-truncation acknowledgments cannot advance durability past a
+    /// rewritten suffix.
+    fn emit_persist_entries(
+        &mut self,
+        from_index: LogIndex,
+        entries: Vec<LogEntry>,
+        out: &mut Vec<Action>,
+    ) {
+        self.unacked_entry_persists += 1;
+        out.push(Action::PersistEntries {
+            from_index,
+            entries,
+        });
+    }
+
     /// Release `action` now if its persist needs are already met, else
     /// hold it in the pending queue.
     fn defer_or_emit(
@@ -524,12 +540,27 @@ impl Node {
                     .min(self.hard_gen_sent);
             }
             PersistKind::Entries => {
-                if up_to_index > self.entries_durable_up_to {
-                    self.entries_durable_up_to = up_to_index;
+                if self.stale_entry_acks > 0 {
+                    self.stale_entry_acks -= 1;
+                    self.unacked_entry_persists = self.unacked_entry_persists.saturating_sub(1);
+                } else {
+                    let capped = up_to_index.min(self.log.last_index());
+                    if capped >= self.log.last_index() {
+                        self.unacked_entry_persists = 0;
+                    } else {
+                        self.unacked_entry_persists = self.unacked_entry_persists.saturating_sub(1);
+                    }
+                    if capped > self.entries_durable_up_to {
+                        self.entries_durable_up_to = capped;
+                    }
                 }
             }
         }
         self.flush_pending(out);
+        if self.role == Role::Leader {
+            self.advance_commit(out);
+            self.try_release_reads(out);
+        }
     }
 
     fn on_restored(
@@ -583,6 +614,8 @@ impl Node {
             self.install_snapshot(meta);
         }
         self.entries_durable_up_to = self.log.last_index();
+        self.unacked_entry_persists = 0;
+        self.stale_entry_acks = 0;
         self.hard_gen_sent += 1;
         self.hard_gen_acked = self.hard_gen_sent;
         self.reset_election_deadline();
@@ -617,27 +650,29 @@ impl Node {
     /// no config entry above the base (invariant M-05's single source
     /// of truth).
     fn recompute_config(&mut self) {
-        let mut latest = self.base_config.clone();
-        let mut committed = self.base_config.clone();
-        let mut last_config_index = if self.log.base_index() > LogIndex::ZERO {
-            self.log.base_index()
-        } else {
-            LogIndex::ZERO
-        };
+        let mut latest: &ClusterConfig = &self.base_config;
+        let mut committed: &ClusterConfig = &self.base_config;
+        let mut last_config_index = self.log.base_index();
         let base = self.log.base_index().0;
         for (offset, entry) in self.log.entries().iter().enumerate() {
             if let EntryKind::Config { config } = &entry.kind {
                 let index = LogIndex(base + 1 + offset as u64);
-                latest = config.clone();
+                latest = config;
                 last_config_index = index;
                 if index <= self.commit_index {
-                    committed = config.clone();
+                    committed = config;
                 }
             }
         }
+        if self.config_state.latest == *latest
+            && self.config_state.committed == *committed
+            && self.config_state.last_config_index == last_config_index
+        {
+            return;
+        }
         self.config_state = ConfigState {
-            latest,
-            committed,
+            latest: latest.clone(),
+            committed: committed.clone(),
             last_config_index,
         };
     }
@@ -722,6 +757,9 @@ impl Node {
     /// index) is committed. The read index is the commit index at
     /// release, which never moves backwards across batches (R-03).
     fn try_release_reads(&mut self, out: &mut Vec<Action>) {
+        if self.hard_gen_acked < self.hard_gen_sent {
+            return;
+        }
         let Some(batch) = &self.pending_reads else {
             return;
         };
@@ -828,16 +866,13 @@ impl Node {
             })
             .collect();
         // The election NoOp: the first entry this leader may count
-        // toward commitment, and the entry ReadIndex waits for at M2.
+        // toward commitment, and the entry ReadIndex waits for.
         let entries = vec![LogEntry {
             term: self.current_term,
             kind: EntryKind::NoOp,
         }];
         let first = self.log.append(&entries);
-        out.push(Action::PersistEntries {
-            from_index: first,
-            entries,
-        });
+        self.emit_persist_entries(first, entries, out);
         let peers: Vec<NodeId> = self.progress.keys().copied().collect();
         for peer in peers {
             self.send_append(peer, out);
@@ -929,11 +964,27 @@ impl Node {
         // In-flight deduplication (C-02): a retry of a proposal that
         // is still uncommitted attaches to the in-flight entry. It
         // appends nothing and is answered when the entry applies.
-        if let Some(&index) = self.inflight.get(&(client_id, seq)) {
-            if index > self.commit_index {
-                *self.attached.entry(index).or_insert(0) += 1;
-                return;
-            }
+        if let Some(&index) = self.inflight.get(&(client_id, seq))
+            && index > self.commit_index
+        {
+            *self.attached.entry(index).or_insert(0) += 1;
+            return;
+        }
+        let uncommitted =
+            usize::try_from(self.log.last_index().0.saturating_sub(self.commit_index.0))
+                .unwrap_or(usize::MAX);
+        if uncommitted >= self.config.max_uncommitted_entries {
+            out.push(Action::ClientResponse {
+                client_id,
+                seq,
+                result: ClientResult::Rejected {
+                    error: ProtocolError::TooManyUncommitted {
+                        uncommitted,
+                        limit: self.config.max_uncommitted_entries,
+                    },
+                },
+            });
+            return;
         }
         let entry = LogEntry {
             term: self.current_term,
@@ -946,10 +997,7 @@ impl Node {
         let entries = vec![entry];
         let first = self.log.append(&entries);
         self.inflight.insert((client_id, seq), first);
-        out.push(Action::PersistEntries {
-            from_index: first,
-            entries,
-        });
+        self.emit_persist_entries(first, entries, out);
         let peers: Vec<NodeId> = self.progress.keys().copied().collect();
         for peer in peers {
             self.send_append(peer, out);
@@ -998,18 +1046,23 @@ impl Node {
         }
         let round = self.pending_reads.as_ref().map_or(0, |batch| batch.round);
         let msg = self.build_append(peer, round);
-        let mut need = LogIndex::ZERO;
-        if let Message::AppendEntries {
+        let need = if let Message::AppendEntries {
             prev_log_index,
             entries,
             ..
         } = &msg
+            && !entries.is_empty()
         {
-            if !entries.is_empty() {
-                need = LogIndex(prev_log_index.0 + entries.len() as u64);
-            }
-        }
-        self.defer_or_emit(out, Action::Send { to: peer, msg }, 0, need);
+            LogIndex(prev_log_index.0 + entries.len() as u64)
+        } else {
+            LogIndex::ZERO
+        };
+        self.defer_or_emit(
+            out,
+            Action::Send { to: peer, msg },
+            self.hard_gen_sent,
+            need,
+        );
     }
 
     /// The metadata of the snapshot this node's log base represents.
@@ -1100,19 +1153,19 @@ impl Node {
         done: bool,
         out: &mut Vec<Action>,
     ) {
-        let respond = |out: &mut Vec<Action>, term: Term, match_index: LogIndex| {
+        if term < self.current_term {
             out.push(Action::Send {
                 to: from,
-                msg: Message::InstallSnapshotResponse { term, match_index },
+                msg: Message::InstallSnapshotResponse {
+                    term: self.current_term,
+                    match_index: self.log.base_index(),
+                },
             });
-        };
-        if term < self.current_term {
-            respond(out, self.current_term, self.log.base_index());
             return;
         }
-        if term > self.current_term {
+        let need_hard = if term > self.current_term {
             self.set_term(term, out);
-            let _ = self.emit_persist_hard(out);
+            self.emit_persist_hard(out)
         } else if self.role == Role::Leader {
             out.push(Action::StepDown { term });
             self.fail_pending_reads(out);
@@ -1121,16 +1174,25 @@ impl Node {
             self.inflight.clear();
             self.attached.clear();
             self.pending_config = None;
+            0
         } else {
             self.role = Role::Follower;
-        }
+            0
+        };
         self.leader_id = Some(from);
         self.last_leader_contact = Some(self.now);
         self.reset_election_deadline();
 
         // A snapshot at or below the base is already installed here.
         if meta.last_included_index <= self.log.base_index() {
-            respond(out, self.current_term, self.log.base_index());
+            let response = Action::Send {
+                to: from,
+                msg: Message::InstallSnapshotResponse {
+                    term: self.current_term,
+                    match_index: self.log.base_index(),
+                },
+            };
+            self.defer_or_emit(out, response, need_hard, LogIndex::ZERO);
             return;
         }
         // One buffer for one snapshot identity: a chunk for a
@@ -1152,22 +1214,34 @@ impl Node {
             // leader learns nothing was installed (invariant N-02;
             // the rejection carries SnapshotError::ChunkOffset's
             // values on the driver side).
-            respond(out, self.current_term, self.log.base_index());
+            let response = Action::Send {
+                to: from,
+                msg: Message::InstallSnapshotResponse {
+                    term: self.current_term,
+                    match_index: self.log.base_index(),
+                },
+            };
+            self.defer_or_emit(out, response, need_hard, LogIndex::ZERO);
             return;
         }
         if let Some(incoming) = &mut self.incoming_snapshot {
             incoming.data.extend_from_slice(data);
         }
-        if done {
-            if let Some(incoming) = self.incoming_snapshot.take() {
-                self.pending_install = Some(meta.clone());
-                out.push(Action::PersistSnapshot {
-                    meta,
-                    data: incoming.data,
-                });
-            }
+        if done && let Some(incoming) = self.incoming_snapshot.take() {
+            self.pending_install = Some(meta.clone());
+            out.push(Action::PersistSnapshot {
+                meta,
+                data: incoming.data,
+            });
         }
-        respond(out, self.current_term, self.log.base_index());
+        let response = Action::Send {
+            to: from,
+            msg: Message::InstallSnapshotResponse {
+                term: self.current_term,
+                match_index: self.log.base_index(),
+            },
+        };
+        self.defer_or_emit(out, response, need_hard, LogIndex::ZERO);
     }
 
     /// Handle an `InstallSnapshotResponse`: a follower whose reported
@@ -1217,10 +1291,11 @@ impl Node {
             self.install_snapshot(meta);
             return;
         }
-        if let Some(loaded) = &self.loaded_snapshot {
-            if loaded.meta == *meta && meta.last_included_index <= self.commit_index {
-                self.install_snapshot(meta);
-            }
+        if let Some(loaded) = &self.loaded_snapshot
+            && loaded.meta == *meta
+            && meta.last_included_index <= self.commit_index
+        {
+            self.install_snapshot(meta);
         }
     }
 
@@ -1233,8 +1308,14 @@ impl Node {
         if index < self.log.base_index() {
             return;
         }
-        if self.log.term_at(index) != Some(meta.last_included_term) {
+        if self.log.term_at(index) == Some(meta.last_included_term) {
+            if self.entries_durable_up_to < index {
+                self.entries_durable_up_to = index;
+            }
+        } else {
             self.log.clear_entries();
+            self.entries_durable_up_to = index;
+            self.stale_entry_acks = self.unacked_entry_persists;
         }
         self.log.advance_base(index, meta.last_included_term);
         if self.commit_index < index {
@@ -1246,10 +1327,10 @@ impl Node {
         self.base_config = meta.config.clone();
         self.inflight.retain(|_, entry_index| *entry_index > index);
         self.attached.retain(|entry_index, _| *entry_index > index);
-        if let Some(incoming) = &self.incoming_snapshot {
-            if incoming.meta.last_included_index <= index {
-                self.incoming_snapshot = None;
-            }
+        if let Some(incoming) = &self.incoming_snapshot
+            && incoming.meta.last_included_index <= index
+        {
+            self.incoming_snapshot = None;
         }
         self.recompute_config();
     }
@@ -1258,6 +1339,9 @@ impl Node {
     /// for an entry from the leader's current term (the Figure 8 rule,
     /// invariant S-06), then propagate applies and the new commit.
     fn advance_commit(&mut self, out: &mut Vec<Action>) {
+        if self.hard_gen_acked < self.hard_gen_sent {
+            return;
+        }
         let mut held: Vec<u64> = self
             .config_state
             .latest
@@ -1265,7 +1349,7 @@ impl Node {
             .iter()
             .map(|&v| {
                 if v == self.id {
-                    self.log.last_index().0
+                    self.entries_durable_up_to.0
                 } else {
                     self.progress.get(&v).map_or(0, |p| p.match_index.0)
                 }
@@ -1295,20 +1379,19 @@ impl Node {
             let Some(entry) = self.log.entry_at(index).cloned() else {
                 break;
             };
-            self.defer_or_emit(
-                out,
-                Action::Apply {
-                    index,
-                    entry: entry.clone(),
-                },
-                0,
-                index,
-            );
-            if let EntryKind::Config { config } = &entry.kind {
-                let config = config.clone();
+            let applied_config = match &entry.kind {
+                EntryKind::Config { config } => Some(config.clone()),
+                _ => None,
+            };
+            let applied_command = match &entry.kind {
+                EntryKind::Command { client_id, seq, .. } => Some((*client_id, *seq)),
+                _ => None,
+            };
+            self.defer_or_emit(out, Action::Apply { index, entry }, 0, index);
+            if let Some(config) = applied_config {
                 self.on_config_applied(index, &config, out);
             }
-            if let EntryKind::Command { client_id, seq, .. } = entry.kind {
+            if let Some((client_id, seq)) = applied_command {
                 self.defer_or_emit(
                     out,
                     Action::ClientResponse {
@@ -1374,7 +1457,7 @@ impl Node {
                 term,
                 prev_log_index,
                 prev_log_term,
-                &entries,
+                entries,
                 leader_commit,
                 read_round,
                 out,
@@ -1446,17 +1529,17 @@ impl Node {
             });
             return;
         }
-        if let Some(noop_index) = self.log.first_index_of_term(self.current_term) {
-            if self.commit_index < noop_index {
-                reject(
-                    out,
-                    ProtocolError::LeaderNoopUncommitted {
-                        noop_index,
-                        commit_index: self.commit_index,
-                    },
-                );
-                return;
-            }
+        if let Some(noop_index) = self.log.first_index_of_term(self.current_term)
+            && self.commit_index < noop_index
+        {
+            reject(
+                out,
+                ProtocolError::LeaderNoopUncommitted {
+                    noop_index,
+                    commit_index: self.commit_index,
+                },
+            );
+            return;
         }
         if self.config_state.last_config_index > self.commit_index {
             reject(
@@ -1498,10 +1581,7 @@ impl Node {
         }];
         let first = self.log.append(&entries);
         self.pending_config = Some((first, change));
-        out.push(Action::PersistEntries {
-            from_index: first,
-            entries,
-        });
+        self.emit_persist_entries(first, entries, out);
         self.recompute_config();
         let peers: Vec<NodeId> = self.progress.keys().copied().collect();
         for peer in peers {
@@ -1534,15 +1614,23 @@ impl Node {
             false
         };
         // Learners never vote (M-04): they answer, but never grant,
-        // and they never record a vote for themselves.
+        // and they never record a vote for themselves. If the higher
+        // term changed persistent hard state, hold the response until
+        // HardState persistence is acknowledged (T-02).
         if !self.config_state.latest.is_voter(self.id) {
-            out.push(Action::Send {
+            let response = Action::Send {
                 to: from,
                 msg: Message::RequestVoteResponse {
                     term: self.current_term,
                     vote_granted: false,
                 },
-            });
+            };
+            if hard_changed {
+                let generation = self.emit_persist_hard(out);
+                self.defer_or_emit(out, response, generation, LogIndex::ZERO);
+            } else {
+                out.push(response);
+            }
             return;
         }
         let grant = (self.voted_for.is_none() || self.voted_for == Some(from))
@@ -1655,7 +1743,7 @@ impl Node {
         hard_changed: bool,
         out: &mut Vec<Action>,
     ) {
-        let new_commit = leader_commit.min(self.log.last_index());
+        let new_commit = leader_commit.min(self.log.base_index());
         if new_commit > self.commit_index {
             self.commit_index = new_commit;
             self.emit_applies(out);
@@ -1692,7 +1780,7 @@ impl Node {
         term: Term,
         prev_log_index: LogIndex,
         prev_log_term: Term,
-        entries: &[LogEntry],
+        entries: Vec<LogEntry>,
         leader_commit: LogIndex,
         read_round: u64,
         out: &mut Vec<Action>,
@@ -1721,6 +1809,7 @@ impl Node {
             self.progress.clear();
             self.inflight.clear();
             self.attached.clear();
+            self.pending_config = None;
             false
         } else {
             self.role = Role::Follower;
@@ -1772,12 +1861,8 @@ impl Node {
             return;
         }
 
+        let batch_len = entries.len() as u64;
         let need_entries = self.merge_and_commit(prev_log_index, entries, leader_commit, out);
-        let verified_up_to = if entries.is_empty() {
-            self.log.last_index()
-        } else {
-            LogIndex(prev_log_index.0 + entries.len() as u64)
-        };
 
         // ReadIndex bookkeeping (R-04): remember the highest round
         // token this leader has shown us and echo it back, so the
@@ -1785,11 +1870,7 @@ impl Node {
         if read_round > self.last_read_round {
             self.last_read_round = read_round;
         }
-        let matched = if entries.is_empty() {
-            prev_log_index
-        } else {
-            verified_up_to
-        };
+        let matched = LogIndex(prev_log_index.0 + batch_len);
         let response = Action::Send {
             to: from,
             msg: Message::AppendEntriesResponse {
@@ -1816,45 +1897,44 @@ impl Node {
     fn merge_and_commit(
         &mut self,
         prev_log_index: LogIndex,
-        entries: &[LogEntry],
+        mut entries: Vec<LogEntry>,
         leader_commit: LogIndex,
         out: &mut Vec<Action>,
     ) -> LogIndex {
+        let batch_len = entries.len() as u64;
         // Keep matching entries, truncate and rewrite at the first
         // conflict, append what is new.
-        let mut changed_from: Option<LogIndex> = None;
+        let mut changed_from: Option<(LogIndex, usize)> = None;
         for (offset, entry) in entries.iter().enumerate() {
             let index = LogIndex(prev_log_index.0 + 1 + offset as u64);
             match self.log.entry_at(index) {
                 Some(existing) if existing.term == entry.term => {}
                 Some(_) => {
                     self.log.truncate_from(index);
+                    self.entries_durable_up_to =
+                        self.entries_durable_up_to.min(LogIndex(index.0 - 1));
+                    self.stale_entry_acks = self.unacked_entry_persists;
                     self.log.append(&entries[offset..]);
-                    changed_from = Some(index);
+                    changed_from = Some((index, offset));
                     break;
                 }
                 None => {
                     self.log.append(&entries[offset..]);
-                    changed_from = Some(index);
+                    changed_from = Some((index, offset));
                     break;
                 }
             }
         }
         let mut need_entries = LogIndex::ZERO;
-        if let Some(from_index) = changed_from {
-            let suffix = self.log.entries_from(from_index, usize::MAX, usize::MAX);
+        if let Some((from_index, offset)) = changed_from {
             need_entries = self.log.last_index();
-            out.push(Action::PersistEntries {
-                from_index,
-                entries: suffix,
-            });
+            if offset > 0 {
+                entries.drain(..offset);
+            }
+            self.emit_persist_entries(from_index, entries, out);
         }
-        // Commit advancement bounded by what this batch verified.
-        let verified_up_to = if entries.is_empty() {
-            self.log.last_index()
-        } else {
-            LogIndex(prev_log_index.0 + entries.len() as u64)
-        };
+        // Commit advancement bounded strictly by what this batch verified.
+        let verified_up_to = LogIndex(prev_log_index.0 + batch_len);
         let new_commit = leader_commit.min(verified_up_to);
         if new_commit > self.commit_index {
             self.commit_index = new_commit;
@@ -1908,12 +1988,12 @@ impl Node {
             // A successful response echoes the follower's latest round
             // token; count it toward the pending ReadIndex round and
             // release the batch if the commit gate also holds.
-            if read_round != 0 {
-                if let Some(batch) = &mut self.pending_reads {
-                    if batch.round == read_round && self.config_state.latest.is_voter(from) {
-                        batch.acks.insert(from);
-                    }
-                }
+            if read_round != 0
+                && let Some(batch) = &mut self.pending_reads
+                && batch.round == read_round
+                && self.config_state.latest.is_voter(from)
+            {
+                batch.acks.insert(from);
             }
             self.try_release_reads(out);
             return;

@@ -1,9 +1,7 @@
 //! The replicated log: a contiguous entry vector behind a snapshot base.
 //!
 //! The entry at log index `i` lives at vector position
-//! `i - base_index - 1`. Index 0 is the sentinel with term 0. Snapshot
-//! support (base advancement and compaction) lands at M3; at M1 the base
-//! is always the sentinel.
+//! `i - base_index - 1`. Index 0 is the sentinel with term 0.
 
 use crate::ids::{ClientId, LogIndex, Term};
 use crate::membership::ClusterConfig;
@@ -16,7 +14,7 @@ pub enum EntryKind {
     NoOp,
     /// A client command. The payload is the canonical command encoding
     /// produced by simraft-kv; the core treats it as opaque bytes and
-    /// carries the client identity alongside for deduplication (M2).
+    /// carries the client identity alongside for deduplication.
     Command {
         /// The client that proposed the command.
         client_id: ClientId,
@@ -25,7 +23,7 @@ pub enum EntryKind {
         /// The canonical command payload bytes.
         payload: Vec<u8>,
     },
-    /// A cluster configuration change (used from M3).
+    /// A cluster configuration change.
     Config {
         /// The configuration this entry installs when it applies.
         config: ClusterConfig,
@@ -69,7 +67,7 @@ impl Log {
         Self::default()
     }
 
-    /// The index of the snapshot base (0 until snapshots land at M3).
+    /// The index of the snapshot base (0 before any snapshot is installed).
     #[must_use]
     pub const fn base_index(&self) -> LogIndex {
         self.base_index
@@ -77,7 +75,7 @@ impl Log {
 
     /// The index of the last entry, or the base index when empty.
     #[must_use]
-    pub fn last_index(&self) -> LogIndex {
+    pub const fn last_index(&self) -> LogIndex {
         LogIndex(self.base_index.0 + self.entries.len() as u64)
     }
 
@@ -138,7 +136,7 @@ impl Log {
     }
 
     /// Advance the snapshot base to (`index`, `term`), discarding every
-    /// entry at or below `index`. The caller (snapshot install, M3)
+    /// entry at or below `index`. The caller (snapshot install)
     /// guarantees `term` is the term of the entry at `index` and that
     /// `index` does not pass the node's commit boundary (invariant
     /// N-05). Advancing to or below the current base is a no-op.

@@ -67,6 +67,12 @@ pub struct KvStateMachine {
     last_applied: LogIndex,
 }
 
+impl Default for KvStateMachine {
+    fn default() -> Self {
+        Self::with_max_sessions(simraft_core::Config::default().max_sessions)
+    }
+}
+
 impl KvStateMachine {
     /// A fresh state machine retaining at most `max_sessions` client
     /// sessions.
@@ -78,6 +84,19 @@ impl KvStateMachine {
             max_sessions,
             last_applied: LogIndex::ZERO,
         }
+    }
+
+    /// Construct a state machine bounded by `max_sessions` retained
+    /// client sessions (`Config::max_sessions`, invariant C-03).
+    #[must_use]
+    pub const fn with_max_sessions(max_sessions: usize) -> Self {
+        Self::new(max_sessions)
+    }
+
+    /// The configured session retention bound.
+    #[must_use]
+    pub const fn max_sessions(&self) -> usize {
+        self.max_sessions
     }
 
     /// The highest log index applied so far.
@@ -191,6 +210,7 @@ impl KvStateMachine {
             })
             .collect();
         self.last_applied = parts.last_included_index;
+        self.evict_sessions();
     }
 
     /// Execute one command payload under the session rules of

@@ -249,10 +249,28 @@ fn bench_replication_catch_up(c: &mut Criterion) {
                 || {
                     let mut nodes = cluster();
                     elect(&mut nodes, NodeId(1));
+                    // Commit the leader's NoOp with node 2 so the
+                    // uncommitted tail budget covers all 10,000
+                    // proposals while node 3 stays completely empty.
+                    let term = nodes.get(&NodeId(1)).expect("leader exists").current_term();
+                    nodes
+                        .get_mut(&NodeId(1))
+                        .expect("leader exists")
+                        .step(Event::Message {
+                            from: NodeId(2),
+                            msg: Message::AppendEntriesResponse {
+                                term,
+                                success: true,
+                                match_index: LogIndex(1),
+                                conflict_index: LogIndex::ZERO,
+                                conflict_term: simraft_core::Term::ZERO,
+                                read_round: 0,
+                            },
+                        });
                     // Fill the leader's log to 10,000 entries past
                     // its NoOp, acknowledging each persist and
-                    // discarding the released sends: the followers
-                    // never see them and stay empty.
+                    // discarding the released sends: node 3 never
+                    // sees them and stays empty.
                     for seq in 1..=10_000_u64 {
                         let leader = nodes.get_mut(&NodeId(1)).expect("leader exists");
                         leader.step(Event::Propose {

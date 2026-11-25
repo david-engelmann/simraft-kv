@@ -1,19 +1,6 @@
 //! A-05: a node that catches up through a leader snapshot
 //! serves the snapshotted state from its own state machine
-//! (docs/INVARIANTS.md section 10). The scenario crosses the
-//! adapter's compaction threshold while one member is down,
-//! so the member's only route back is a snapshot, then wipes
-//! one of the other members and leaves the third down, so
-//! the only majority the re-formed cluster can reach
-//! includes the snapshot receiver and its complete log must
-//! lead. Reads are
-//! then served from the receiver's own machine: the client
-//! follows redirects, so only a leader's machine is ever read,
-//! and promoting the receiver is what makes its machine the
-//! serving one. Before the fix this test is red at the first
-//! promoted read, because the receiver persisted the snapshot
-//! to its store but never installed it into its running state
-//! machine, and only a restart (the boot path) healed it.
+//! (docs/INVARIANTS.md section 10).
 
 use std::net::TcpListener;
 use std::path::PathBuf;
@@ -28,19 +15,20 @@ const BIN: &str = env!("CARGO_BIN_EXE_simraft-node");
 /// beyond any entry-by-entry catch-up.
 const WRITES: u32 = 140;
 
-/// A running cluster of three node processes on ephemeral
-/// ports, modeled on `cluster_end_to_end.rs`.
 struct Cluster {
     children: Vec<Child>,
     addrs: Vec<String>,
     dirs: Vec<PathBuf>,
 }
 
-fn free_addr() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-    let addr = listener.local_addr().expect("the listener has an address");
-    drop(listener);
-    addr.to_string()
+fn reserve_free_addrs(count: usize) -> Vec<String> {
+    let listeners: Vec<TcpListener> = (0..count)
+        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port"))
+        .collect();
+    listeners
+        .iter()
+        .map(|l| l.local_addr().expect("listener has local_addr").to_string())
+        .collect()
 }
 
 fn data_dir(tag: &str) -> PathBuf {
@@ -49,68 +37,101 @@ fn data_dir(tag: &str) -> PathBuf {
     dir
 }
 
+fn cleanup_attempt(children: &mut [Child], dirs: &[PathBuf]) {
+    for child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    for dir in dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+fn wait_children_ready(
+    children: &mut [Child],
+    addrs: &[String],
+    indices: &[usize],
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for &i in indices {
+        loop {
+            if Instant::now() >= deadline {
+                return Err(format!("node {} did not become ready in time", i + 1));
+            }
+            if client_probe(&addrs[i]) {
+                break;
+            }
+            if let Some(status) = children[i].try_wait().expect("poll the node process") {
+                return Err(format!(
+                    "node {} exited with {status} before serving",
+                    i + 1
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    Ok(())
+}
+
 impl Cluster {
     fn start(tag: &str) -> Self {
-        let addrs: Vec<String> = (0..3).map(|_| free_addr()).collect();
-        let specs: Vec<String> = addrs
-            .iter()
-            .enumerate()
-            .map(|(i, addr)| format!("{}@{}", i + 1, addr))
-            .collect();
-        let mut children = Vec::new();
-        let mut dirs = Vec::new();
-        for i in 0..3 {
-            let dir = data_dir(&format!("{tag}-{i}"));
-            let mut cmd = Command::new(BIN);
-            cmd.arg("serve")
-                .arg("--id")
-                .arg(format!("{}", i + 1))
-                .arg("--data-dir")
-                .arg(&dir)
-                .arg("--tick-ms")
-                .arg("10")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            for spec in &specs {
-                cmd.arg("--member").arg(spec);
-            }
-            children.push(cmd.spawn().expect("spawn a node process"));
-            dirs.push(dir);
+        let probe = TcpListener::bind("127.0.0.1:0").expect("bind loopback probe listener");
+        let probe_addr = probe.local_addr().expect("loopback listener local_addr");
+        if let Err(err) = std::net::TcpStream::connect_timeout(&probe_addr, Duration::from_secs(1))
+        {
+            panic!(
+                "loopback TCP connect to {probe_addr} failed ({err}); multi-process simraft-node TCP tests require loopback socket access"
+            );
         }
-        let mut cluster = Self {
-            children,
-            addrs,
-            dirs,
-        };
-        cluster.wait_ready();
-        cluster
-    }
-
-    /// Wait until every node process is serving, probing
-    /// through the client contract as the end-to-end suite
-    /// does.
-    fn wait_ready(&mut self) {
-        self.wait_ready_some(&[0, 1, 2]);
-    }
-
-    /// Wait until the given node processes are serving.
-    fn wait_ready_some(&mut self, indices: &[usize]) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        for &i in indices {
-            loop {
-                assert!(
-                    Instant::now() < deadline,
-                    "node {} did not become ready in time",
-                    i + 1
-                );
-                if client_get(&self.addrs[i], "readiness-probe").is_ok() {
-                    break;
+        drop(probe);
+        let mut last_err = String::new();
+        for attempt in 0..5 {
+            let addrs = reserve_free_addrs(3);
+            let specs: Vec<String> = addrs
+                .iter()
+                .enumerate()
+                .map(|(i, addr)| format!("{}@{}", i + 1, addr))
+                .collect();
+            let mut children = Vec::new();
+            let mut dirs = Vec::new();
+            for i in 0..3 {
+                let dir = data_dir(&format!("{tag}-{attempt}-{i}"));
+                let mut cmd = Command::new(BIN);
+                cmd.arg("serve")
+                    .arg("--id")
+                    .arg(format!("{}", i + 1))
+                    .arg("--data-dir")
+                    .arg(&dir)
+                    .arg("--tick-ms")
+                    .arg("10")
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                for spec in &specs {
+                    cmd.arg("--member").arg(spec);
                 }
-                if let Some(status) = self.children[i].try_wait().expect("poll the node process") {
-                    panic!("node {} exited with {status} before serving", i + 1);
-                }
-                std::thread::sleep(Duration::from_millis(50));
+                children.push(cmd.spawn().expect("spawn a node process"));
+                dirs.push(dir);
             }
+            match wait_children_ready(&mut children, &addrs, &[0, 1, 2]) {
+                Ok(()) => {
+                    return Self {
+                        children,
+                        addrs,
+                        dirs,
+                    };
+                }
+                Err(err) => {
+                    cleanup_attempt(&mut children, &dirs);
+                    last_err = err;
+                }
+            }
+        }
+        panic!("cluster failed to start after 5 attempts: {last_err}");
+    }
+
+    fn wait_ready_some(&mut self, indices: &[usize]) {
+        if let Err(err) = wait_children_ready(&mut self.children, &self.addrs, indices) {
+            panic!("{err}");
         }
     }
 
@@ -145,14 +166,16 @@ impl Cluster {
 
 impl Drop for Cluster {
     fn drop(&mut self) {
-        for child in &mut self.children {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        for dir in &self.dirs {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+        cleanup_attempt(&mut self.children, &self.dirs);
     }
+}
+
+fn client_probe(server: &str) -> bool {
+    let output = Command::new(BIN)
+        .args(["client", "--server", server, "get", "readiness-probe"])
+        .output()
+        .expect("run the client probe");
+    matches!(output.status.code(), Some(0 | 1))
 }
 
 fn client(args: &[&str]) -> Result<String, String> {
@@ -176,9 +199,6 @@ fn client_get(server: &str, key: &str) -> Result<String, String> {
     client(&["--server", server, "get", key])
 }
 
-/// Poll until a node's store holds a snapshot file, the
-/// durable sign that a compaction or a received install
-/// completed on that node.
 fn wait_for_snapshot(cluster: &Cluster, index: usize, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(60);
     let path = cluster.dirs[index].join("snapshot");
@@ -203,23 +223,13 @@ fn snapshot_receiver_serves_snapshotted_state_after_promotion() {
         let value = format!("v{i:04}");
         client_put(&cluster.addrs[0], &key, &value).expect("writes commit on the majority");
     }
-    // The leader must have compacted before the third member
-    // returns, so the member's catch-up is a snapshot, not a
-    // run of entries.
     wait_for_snapshot(&cluster, 0, "leader compaction");
+    wait_for_snapshot(&cluster, 1, "follower compaction");
     cluster.restart(2);
     wait_for_snapshot(&cluster, 2, "received snapshot");
-    // One more write lands on the receiver as ordinary
-    // entries past the snapshot boundary.
     client_put(&cluster.addrs[0], "probe", "after-snapshot").expect("the cluster is healthy");
-    std::thread::sleep(Duration::from_millis(500));
+    cluster.wait_ready_some(&[2]);
 
-    // Promote the receiver: wipe one of the other members
-    // and leave the third down, so the only majority the
-    // re-formed cluster can reach includes the receiver,
-    // whose complete log must lead it. (Wiping both would
-    // let the two fresh members elect each other on empty
-    // logs and serve reads from an empty machine.)
     cluster.kill(0);
     cluster.kill(1);
     std::fs::remove_dir_all(&cluster.dirs[1]).expect("wipe a member data dir");

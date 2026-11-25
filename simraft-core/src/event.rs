@@ -1,9 +1,7 @@
 //! Inputs to the sans-I/O core.
 //!
-//! A driver (the simulator, or a future I/O adapter) feeds `Node` one
-//! `Event` at a time and executes the `Action` values that come back.
-//! Event kinds are added per milestone: `ReadIndex` and configuration
-//! proposals land at M2 and M3.
+//! A driver (`simraft-sim` or `simraft-node`) feeds `Node` one `Event`
+//! at a time and executes the `Action` values that come back.
 
 use crate::ids::{ClientId, LogIndex, NodeId, Term, Tick};
 use crate::log::LogEntry;

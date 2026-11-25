@@ -845,6 +845,7 @@ dependencies = [
 name = "simraft-kv"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "simraft-core",
 ]
 

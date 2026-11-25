@@ -1,19 +1,15 @@
-//! Leader batching contract (invariant B-02, post-M4 Lane 3
-//! Stage A): proposals the leader appends before the persist
-//! acknowledgement that releases them are broadcast as ONE
-//! `AppendEntries` round per follower, not one round per
-//! proposal.
+//! Leader batching contract (invariant B-02): proposals the
+//! leader appends before the persist acknowledgement that releases
+//! them are broadcast as one `AppendEntries` round per follower,
+//! not one round per proposal.
 //!
-//! The mechanism the contract pins: `Node::step` holds each
-//! proposal's sends until the entries are durable (invariant
-//! T-02), and a later proposal's send to a follower is built from
-//! the same next index as the earlier one's, so it carries every
-//! entry the earlier send carried and more. When one persist
-//! acknowledgement releases several held sends to the same
-//! follower, all but the last are redundant retransmissions. The
-//! coalescing test below is the designed red of Lane 3 Stage A:
-//! on the unmodified core it observes one released round per
-//! proposal.
+//! `Node::step` holds each proposal's sends until the entries are
+//! durable (invariant T-02), and a later proposal's send to a
+//! follower is built from the same next index as the earlier
+//! one's, so it carries every entry the earlier send carried and
+//! more. When one persist acknowledgement releases several held
+//! sends to the same follower, only the last send per follower is
+//! emitted.
 
 use std::collections::BTreeMap;
 

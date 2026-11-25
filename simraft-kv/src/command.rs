@@ -10,11 +10,17 @@
 //!
 //! Command results use the section 7.2 result encoding: tag 0 = Ack
 //! (no payload), 1 = Value (`value_len` u32 plus bytes), 2 = Error
-//! (`error_code` u32, `message_len` u32, message UTF-8 bytes). All integers
-//! are little-endian.
+//! (`error_code` u32, `message_len` u32, message UTF-8 bytes). All
+//! integers are little-endian and payloads above
+//! [`MAX_PAYLOAD_BYTES`] (16 MiB) are rejected with an error naming
+//! both the offending length and the limit.
 
 use crate::error::KvError;
 use simraft_core::ClientId;
+
+/// Maximum permitted encoded payload size in bytes (16 MiB,
+/// docs/ARCHITECTURE.md section 7).
+pub const MAX_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
 /// A key-value operation carried by a command payload.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,37 +59,59 @@ pub enum CommandResult {
 
 /// Encode a command payload for client `client_id` with per-client
 /// sequence number `seq`.
-#[must_use]
-pub fn encode_command(client_id: ClientId, seq: u64, op: &KvOp) -> Vec<u8> {
-    let mut out = Vec::new();
+///
+/// # Errors
+///
+/// Returns `KvError::PayloadTooLarge` naming the total length and
+/// [`MAX_PAYLOAD_BYTES`] when the encoded payload exceeds 16 MiB.
+pub fn encode_command(client_id: ClientId, seq: u64, op: &KvOp) -> Result<Vec<u8>, KvError> {
+    let total = match op {
+        KvOp::Put { key, value } => 17_usize
+            .saturating_add(4)
+            .saturating_add(key.len())
+            .saturating_add(4)
+            .saturating_add(value.len()),
+        KvOp::Delete { key } => 17_usize.saturating_add(4).saturating_add(key.len()),
+    };
+    if total > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: total,
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let mut out = Vec::with_capacity(total);
     out.extend_from_slice(&client_id.0.to_le_bytes());
     out.extend_from_slice(&seq.to_le_bytes());
     match op {
         KvOp::Put { key, value } => {
             out.push(0);
-            push_bytes(&mut out, key);
-            push_bytes(&mut out, value);
+            push_bytes(&mut out, key)?;
+            push_bytes(&mut out, value)?;
         }
         KvOp::Delete { key } => {
             out.push(1);
-            push_bytes(&mut out, key);
+            push_bytes(&mut out, key)?;
         }
     }
-    out
+    Ok(out)
 }
 
 /// Decode a command payload.
 ///
 /// # Errors
 ///
-/// Returns `KvError::Truncated` naming the field and offset when the
-/// payload ends early, and `KvError::UnknownTag` for an unassigned
-/// operation kind.
+/// Returns `KvError::PayloadTooLarge` when `payload` exceeds 16 MiB,
+/// `KvError::Truncated` naming the field and offset when the payload
+/// ends early, `KvError::UnknownTag` for an unassigned operation kind,
+/// and `KvError::TrailingBytes` when undecoded bytes remain.
 pub fn decode_command(payload: &[u8]) -> Result<(ClientId, u64, KvOp), KvError> {
-    let mut reader = Reader {
-        buf: payload,
-        pos: 0,
-    };
+    if payload.len() > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: payload.len(),
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let mut reader = Reader::new(payload);
     let client_id = ClientId(reader.u64("client_id")?);
     let seq = reader.u64("seq")?;
     let kind_offset = reader.pos;
@@ -105,39 +133,46 @@ pub fn decode_command(payload: &[u8]) -> Result<(ClientId, u64, KvOp), KvError> 
             });
         }
     };
+    reader.finish()?;
     Ok((client_id, seq, op))
 }
 
 /// Encode a command result in the section 7.2 result encoding.
-#[must_use]
-pub fn encode_result(result: &CommandResult) -> Vec<u8> {
-    let mut out = Vec::new();
+///
+/// # Errors
+///
+/// Returns `KvError::PayloadTooLarge` when the encoded result exceeds
+/// [`MAX_PAYLOAD_BYTES`].
+pub fn encode_result(result: &CommandResult) -> Result<Vec<u8>, KvError> {
+    let total = match result {
+        CommandResult::Ack => 1,
+        CommandResult::Value(value) => 5_usize.saturating_add(value.len()),
+        CommandResult::Error { message, .. } => 9_usize.saturating_add(message.len()),
+    };
+    if total > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: total,
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let mut out = Vec::with_capacity(total);
     match result {
         CommandResult::Ack => out.push(0),
         CommandResult::Value(value) => {
             out.push(1);
-            push_bytes(&mut out, value);
+            push_bytes(&mut out, value)?;
         }
         CommandResult::Error { code, message } => {
             out.push(2);
             out.extend_from_slice(&code.to_le_bytes());
-            push_bytes(&mut out, message.as_bytes());
+            push_bytes(&mut out, message.as_bytes())?;
         }
     }
-    out
+    Ok(out)
 }
 
-/// Decode a command result.
-///
-/// # Errors
-///
-/// Returns `KvError::Truncated` or `KvError::UnknownTag` for malformed
-/// input, naming the offset.
-pub fn decode_result(payload: &[u8]) -> Result<CommandResult, KvError> {
-    let mut reader = Reader {
-        buf: payload,
-        pos: 0,
-    };
+/// Decode a command result from `reader`, advancing the cursor past it.
+pub(crate) fn decode_result_from(reader: &mut Reader<'_>) -> Result<CommandResult, KvError> {
     let tag_offset = reader.pos;
     let tag = reader.u8("result tag")?;
     match tag {
@@ -157,16 +192,53 @@ pub fn decode_result(payload: &[u8]) -> Result<CommandResult, KvError> {
     }
 }
 
-pub(crate) fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
-    let len = u32::try_from(bytes.len()).expect("payload fields fit in u32 by construction");
+/// Decode a command result.
+///
+/// # Errors
+///
+/// Returns `KvError::PayloadTooLarge`, `KvError::Truncated`,
+/// `KvError::UnknownTag`, or `KvError::TrailingBytes` for malformed
+/// input, naming the offset.
+pub fn decode_result(payload: &[u8]) -> Result<CommandResult, KvError> {
+    if payload.len() > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: payload.len(),
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let mut reader = Reader::new(payload);
+    let result = decode_result_from(&mut reader)?;
+    reader.finish()?;
+    Ok(result)
+}
+
+pub(crate) fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), KvError> {
+    if bytes.len() > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: bytes.len(),
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let next_len = out.len().saturating_add(4).saturating_add(bytes.len());
+    if next_len > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: next_len,
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let len = u32::try_from(bytes.len()).map_err(|_| KvError::PayloadTooLarge {
+        length: bytes.len(),
+        limit: MAX_PAYLOAD_BYTES,
+    })?;
     out.extend_from_slice(&len.to_le_bytes());
     out.extend_from_slice(bytes);
+    Ok(())
 }
 
 /// A cursor over a payload, producing offset-exact truncation errors.
 pub(crate) struct Reader<'a> {
-    buf: &'a [u8],
-    pos: usize,
+    pub(crate) buf: &'a [u8],
+    pub(crate) pos: usize,
 }
 
 impl<'a> Reader<'a> {
@@ -215,17 +287,26 @@ impl<'a> Reader<'a> {
         ))
     }
 
-    /// The unconsumed remainder of the buffer.
-    #[allow(
-        clippy::missing_const_for_fn,
-        reason = "slice indexing is not const; the cursor API stays uniform"
-    )]
-    pub(crate) fn rest(&self) -> &[u8] {
-        &self.buf[self.pos..]
+    /// Ensure the entire input buffer has been consumed.
+    pub(crate) const fn finish(&self) -> Result<(), KvError> {
+        let extra = self.buf.len().saturating_sub(self.pos);
+        if extra > 0 {
+            return Err(KvError::TrailingBytes {
+                offset: self.pos,
+                extra,
+            });
+        }
+        Ok(())
     }
 
     pub(crate) fn bytes(&mut self, field: &'static str) -> Result<Vec<u8>, KvError> {
         let len = self.u32(field)? as usize;
+        if len > MAX_PAYLOAD_BYTES {
+            return Err(KvError::PayloadTooLarge {
+                length: len,
+                limit: MAX_PAYLOAD_BYTES,
+            });
+        }
         Ok(self.take(len, field)?.to_vec())
     }
 }

@@ -9,9 +9,9 @@
 //! the whole snapshot and a partial snapshot is never installed
 //! (invariant N-03).
 
-use crate::command::{Reader, decode_result, encode_result, push_bytes};
+use crate::command::{MAX_PAYLOAD_BYTES, Reader, decode_result_from, encode_result, push_bytes};
 use crate::error::KvError;
-use simraft_core::{ClientId, ClusterConfig, LogIndex, NodeId, Term};
+use simraft_core::{ClientId, ClusterConfig, ConfigError, LogIndex, NodeId, Term};
 
 /// The snapshot payload magic, ASCII "SRSN".
 const MAGIC: &[u8; 4] = b"SRSN";
@@ -44,8 +44,12 @@ pub struct SnapshotParts {
 /// written in ascending order regardless of the order they were
 /// supplied in, so two encodings of the same state compare byte
 /// equal.
-#[must_use]
-pub fn encode_snapshot(parts: &SnapshotParts) -> Vec<u8> {
+///
+/// # Errors
+///
+/// Returns `KvError::PayloadTooLarge` when the encoded snapshot body
+/// exceeds [`MAX_PAYLOAD_BYTES`] (16 MiB).
+pub fn encode_snapshot(parts: &SnapshotParts) -> Result<Vec<u8>, KvError> {
     let mut store = parts.store.clone();
     store.sort();
     let mut sessions = parts.sessions.clone();
@@ -55,40 +59,73 @@ pub fn encode_snapshot(parts: &SnapshotParts) -> Vec<u8> {
     out.extend_from_slice(&VERSION.to_le_bytes());
     out.extend_from_slice(&parts.last_included_index.0.to_le_bytes());
     out.extend_from_slice(&parts.last_included_term.0.to_le_bytes());
-    push_ids(&mut out, parts.config.voters.iter().copied());
-    push_ids(&mut out, parts.config.learners.iter().copied());
+    push_ids(&mut out, parts.config.voters.iter().copied())?;
+    push_ids(&mut out, parts.config.learners.iter().copied())?;
     out.extend_from_slice(&(store.len() as u64).to_le_bytes());
     for (key, value) in &store {
-        push_bytes(&mut out, key);
-        push_bytes(&mut out, value);
+        push_bytes(&mut out, key)?;
+        push_bytes(&mut out, value)?;
     }
     out.extend_from_slice(&(sessions.len() as u64).to_le_bytes());
     for (client, last_seq, response) in &sessions {
+        let encoded_res = encode_result(response)?;
+        let next_len = out
+            .len()
+            .saturating_add(16)
+            .saturating_add(encoded_res.len());
+        if next_len > MAX_PAYLOAD_BYTES {
+            return Err(KvError::PayloadTooLarge {
+                length: next_len,
+                limit: MAX_PAYLOAD_BYTES,
+            });
+        }
         out.extend_from_slice(&client.0.to_le_bytes());
         out.extend_from_slice(&last_seq.to_le_bytes());
-        out.extend_from_slice(&encode_result(response));
+        out.extend_from_slice(&encoded_res);
+    }
+    if out.len() > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: out.len(),
+            limit: MAX_PAYLOAD_BYTES,
+        });
     }
     let digest = snapshot_digest(&out);
     out.extend_from_slice(&digest);
-    out
+    Ok(out)
 }
 
-fn push_ids(out: &mut Vec<u8>, ids: impl Iterator<Item = NodeId>) {
+fn push_ids(out: &mut Vec<u8>, ids: impl Iterator<Item = NodeId>) -> Result<(), KvError> {
     let ids: Vec<NodeId> = ids.collect();
-    let count = u32::try_from(ids.len()).expect("config id counts fit in u32 by construction");
+    let next_len = out
+        .len()
+        .saturating_add(4)
+        .saturating_add(ids.len().saturating_mul(8));
+    if next_len > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: next_len,
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
+    let count = u32::try_from(ids.len()).map_err(|_| KvError::PayloadTooLarge {
+        length: ids.len(),
+        limit: MAX_PAYLOAD_BYTES,
+    })?;
     out.extend_from_slice(&count.to_le_bytes());
     for id in ids {
         out.extend_from_slice(&id.0.to_le_bytes());
     }
+    Ok(())
 }
 
 /// Decode and verify a snapshot payload.
 ///
 /// # Errors
 ///
-/// Returns `KvError::SnapshotDigest` when the trailing digest does
-/// not match the payload (the snapshot is rejected whole), and the
-/// codec's offset-exact errors for truncated or malformed bodies.
+/// Returns `KvError::PayloadTooLarge` when the snapshot body exceeds
+/// [`MAX_PAYLOAD_BYTES`], `KvError::SnapshotDigest` when the trailing
+/// digest does not match the payload, `KvError::TrailingBytes` when
+/// undecoded bytes remain before the digest, and offset-exact errors
+/// for truncated or malformed bodies.
 pub fn decode_snapshot(payload: &[u8]) -> Result<SnapshotParts, KvError> {
     if payload.len() < 32 {
         return Err(KvError::Truncated {
@@ -99,6 +136,12 @@ pub fn decode_snapshot(payload: &[u8]) -> Result<SnapshotParts, KvError> {
         });
     }
     let (body, stored) = payload.split_at(payload.len() - 32);
+    if body.len() > MAX_PAYLOAD_BYTES {
+        return Err(KvError::PayloadTooLarge {
+            length: body.len(),
+            limit: MAX_PAYLOAD_BYTES,
+        });
+    }
     let computed = snapshot_digest(body);
     if computed.as_slice() != stored {
         return Err(KvError::SnapshotDigest {
@@ -125,7 +168,12 @@ pub fn decode_snapshot(payload: &[u8]) -> Result<SnapshotParts, KvError> {
     let last_included_term = Term(reader.u64("last_included_term")?);
     let voters = read_ids(&mut reader, "voter")?;
     let learners = read_ids(&mut reader, "learner")?;
-    let config = ClusterConfig::new(voters, learners).map_err(|_| KvError::SnapshotEmptyVoters)?;
+    let config = ClusterConfig::new(voters, learners).map_err(|err| match err {
+        ConfigError::EmptyVoters => KvError::SnapshotEmptyVoters,
+        other => KvError::SnapshotInvalidConfig {
+            detail: other.to_string(),
+        },
+    })?;
     let store_count = reader.u64("store_count")?;
     let mut store = Vec::new();
     for _ in 0..store_count {
@@ -138,13 +186,10 @@ pub fn decode_snapshot(payload: &[u8]) -> Result<SnapshotParts, KvError> {
     for _ in 0..session_count {
         let client = ClientId(reader.u64("session client_id")?);
         let last_seq = reader.u64("session last_seq")?;
-        let response = decode_result(reader.rest())?;
-        // decode_result consumed exactly its encoding; advance past it
-        // by re-encoding (results are canonical, so lengths agree).
-        let consumed = encode_result(&response).len();
-        reader.take(consumed, "session response")?;
+        let response = decode_result_from(&mut reader)?;
         sessions.push((client, last_seq, response));
     }
+    reader.finish()?;
     Ok(SnapshotParts {
         last_included_index,
         last_included_term,
@@ -276,7 +321,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
         msg.push(0);
     }
     msg.extend_from_slice(&bit_len.to_be_bytes());
-    for block in msg.chunks_exact(64) {
+    for block in msg.as_chunks::<64>().0 {
         let mut w = [0_u32; 64];
         for i in 0..16 {
             w[i] = u32::from_be_bytes([

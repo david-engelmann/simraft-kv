@@ -1,38 +1,75 @@
-//! The client protocol between the simraft-node client mode
-//! and a node's client listener, plus the client implementation.
+//! The client protocol between the `simraft-node` client mode
+//! and a node's client listener, plus the one-shot and stateful
+//! client implementations.
 //!
-//! A request is a length-prefixed SRCL message: a `u32` total
-//! length, then magic "SRCL", version `u16` = 1, op `u8`
+//! A request is a length-prefixed SRCL message: a `u32` body
+//! length, then magic `"SRCL"`, version `u16` = 1, op `u8`
 //! (1 Put, 2 Get, 3 Delete), client id `u64`, sequence `u64`,
 //! key length `u32`, the key, and for Put a value length `u32`
 //! and the value. A response is a length-prefixed SRCL message:
 //! magic, version, status `u8` (0 Ok, 1 Redirect, 2 Error),
 //! present `u8` (for a Get, 1 when a value exists), data length
 //! `u32`, and the data: the value for an Ok Get, the leader's
-//! address as text for a Redirect, the message for an Error.
+//! address as text for a Redirect, or the message for an Error.
 //!
-//! The client retries transient failures (no leader yet, a
-//! refused or dropped connection) against the same member and
-//! follows redirects to the leader, always with the same
-//! (client id, sequence) pair, so a write that committed just
-//! before a retry is deduplicated by the core's session table
-//! rather than applied twice. The retry budget is
-//! `CLIENT_BUDGET`; after it, the last failure is returned.
+//! Clients retry transient failures (no leader yet, a refused or
+//! dropped connection, leadership turnover) and follow redirects
+//! to the leader, always reusing the same `(client_id, seq)` pair
+//! for a given write so a proposal that committed just before a
+//! retry is deduplicated by the session table rather than applied
+//! twice.
 
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
-use std::time::{Duration, Instant};
+use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use simraft_core::ClientId;
+use simraft_kv::MAX_PAYLOAD_BYTES;
 
 use crate::{ClientOp, NodeError};
 
 const MAGIC: &[u8; 4] = b"SRCL";
 const VERSION: u16 = 1;
 
+/// Maximum permitted length of a framed client request or response
+/// body (16 MiB payload cap plus fixed SRCL envelope overhead).
+pub const MAX_CLIENT_BODY_BYTES: usize = MAX_PAYLOAD_BYTES + 64;
+
 /// How long one client operation retries transient failures
 /// before giving up.
 pub const CLIENT_BUDGET: Duration = Duration::from_secs(20);
+
+static PROCESS_SESSION_PREFIX: OnceLock<u64> = OnceLock::new();
+static NEXT_CLIENT_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+const fn splitmix64(mut x: u64) -> u64 {
+    x = (x ^ (x >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    x = (x ^ (x >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    x ^ (x >> 31)
+}
+
+/// Allocate a collision-free `ClientId`.
+///
+/// Mixes the OS process id and full 128-bit launch timestamp into a
+/// per-process upper prefix and adds a strictly monotonic atomic
+/// counter, so consecutive calls in the same process never collide
+/// even when invoked in a tight sub-nanosecond loop.
+#[must_use]
+pub fn next_client_id() -> ClientId {
+    let prefix = *PROCESS_SESSION_PREFIX.get_or_init(|| {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0_u128, |d| d.as_nanos());
+        let lo = u64::try_from(nanos & u128::from(u64::MAX)).unwrap_or(0);
+        let hi = u64::try_from(nanos >> 64).unwrap_or(0);
+        let mixed = splitmix64((u64::from(std::process::id()) << 32) ^ lo ^ hi.rotate_left(19));
+        mixed & 0xFFFF_FFFF_0000_0000
+    });
+    let seq = NEXT_CLIENT_COUNTER.fetch_add(1, Ordering::Relaxed);
+    ClientId(prefix.wrapping_add(seq))
+}
 
 /// A decoded client response.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,13 +89,32 @@ const fn bad(detail: String) -> NodeError {
 }
 
 /// Encode one client request.
-#[must_use]
-pub fn encode_request(client_id: ClientId, seq: u64, op: &ClientOp) -> Vec<u8> {
-    let mut body = Vec::with_capacity(64);
+///
+/// # Errors
+/// Returns `NodeError::Unavailable` when the encoded request body
+/// exceeds [`MAX_CLIENT_BODY_BYTES`].
+pub fn encode_request(client_id: ClientId, seq: u64, op: &ClientOp) -> Result<Vec<u8>, NodeError> {
+    let body_len = match op {
+        ClientOp::Put { key, value } => 31_usize
+            .saturating_add(key.len())
+            .saturating_add(value.len()),
+        ClientOp::Get { key } | ClientOp::Delete { key } => 27_usize.saturating_add(key.len()),
+    };
+    if body_len > MAX_CLIENT_BODY_BYTES {
+        return Err(bad(format!(
+            "client request body length {body_len} bytes exceeds limit of {MAX_CLIENT_BODY_BYTES} bytes"
+        )));
+    }
+    let mut body = Vec::with_capacity(body_len);
     body.extend_from_slice(MAGIC);
     body.extend_from_slice(&VERSION.to_le_bytes());
     match op {
         ClientOp::Put { key, value } => {
+            if key.len().saturating_add(value.len()).saturating_add(25) > MAX_PAYLOAD_BYTES {
+                return Err(bad(format!(
+                    "client command payload exceeds limit of {MAX_PAYLOAD_BYTES} bytes"
+                )));
+            }
             body.push(1);
             body.extend_from_slice(&client_id.0.to_le_bytes());
             body.extend_from_slice(&seq.to_le_bytes());
@@ -75,6 +131,11 @@ pub fn encode_request(client_id: ClientId, seq: u64, op: &ClientOp) -> Vec<u8> {
             body.extend_from_slice(key);
         }
         ClientOp::Delete { key } => {
+            if key.len().saturating_add(21) > MAX_PAYLOAD_BYTES {
+                return Err(bad(format!(
+                    "client command payload exceeds limit of {MAX_PAYLOAD_BYTES} bytes"
+                )));
+            }
             body.push(3);
             body.extend_from_slice(&client_id.0.to_le_bytes());
             body.extend_from_slice(&seq.to_le_bytes());
@@ -85,16 +146,16 @@ pub fn encode_request(client_id: ClientId, seq: u64, op: &ClientOp) -> Vec<u8> {
     let mut out = Vec::with_capacity(4 + body.len());
     out.extend_from_slice(&u32::try_from(body.len()).unwrap_or(u32::MAX).to_le_bytes());
     out.extend_from_slice(&body);
-    out
+    Ok(out)
 }
 
 /// Take `n` bytes at `pos` from a request body, naming the
 /// field in the error when they are not there.
 fn take<'a>(body: &'a [u8], pos: &mut usize, n: usize, field: &str) -> Result<&'a [u8], NodeError> {
-    if body.len() < *pos + n {
+    if body.len().saturating_sub(*pos) < n {
         return Err(bad(format!(
             "client request truncated at {field}: need {n} bytes at offset {pos}, {} remain",
-            body.len() - *pos
+            body.len().saturating_sub(*pos)
         )));
     }
     let slice = &body[*pos..*pos + n];
@@ -108,6 +169,12 @@ fn take<'a>(body: &'a [u8], pos: &mut usize, n: usize, field: &str) -> Result<&'
 /// Returns `NodeError::Unavailable` naming the malformed field
 /// when the request is not a well-formed SRCL message.
 pub fn decode_request(body: &[u8]) -> Result<(ClientId, u64, ClientOp), NodeError> {
+    if body.len() > MAX_CLIENT_BODY_BYTES {
+        return Err(bad(format!(
+            "client request body length {} exceeds limit of {MAX_CLIENT_BODY_BYTES} bytes",
+            body.len()
+        )));
+    }
     let mut pos = 0_usize;
     if take(body, &mut pos, 4, "magic")? != MAGIC {
         return Err(bad("client request has bad magic".to_string()));
@@ -138,6 +205,11 @@ pub fn decode_request(body: &[u8]) -> Result<(ClientId, u64, ClientOp), NodeErro
             .try_into()
             .unwrap_or([0; 4]),
     ) as usize;
+    if key_len > MAX_PAYLOAD_BYTES {
+        return Err(bad(format!(
+            "client key length {key_len} exceeds limit of {MAX_PAYLOAD_BYTES} bytes"
+        )));
+    }
     let key = take(body, &mut pos, key_len, "key")?.to_vec();
     let op = match op_byte {
         1 => {
@@ -146,6 +218,11 @@ pub fn decode_request(body: &[u8]) -> Result<(ClientId, u64, ClientOp), NodeErro
                     .try_into()
                     .unwrap_or([0; 4]),
             ) as usize;
+            if value_len > MAX_PAYLOAD_BYTES {
+                return Err(bad(format!(
+                    "client value length {value_len} exceeds limit of {MAX_PAYLOAD_BYTES} bytes"
+                )));
+            }
             let value = take(body, &mut pos, value_len, "value")?.to_vec();
             ClientOp::Put { key, value }
         }
@@ -155,6 +232,12 @@ pub fn decode_request(body: &[u8]) -> Result<(ClientId, u64, ClientOp), NodeErro
             return Err(bad(format!("unknown client op byte {found}")));
         }
     };
+    if pos != body.len() {
+        return Err(bad(format!(
+            "client request has {} trailing bytes",
+            body.len() - pos
+        )));
+    }
     Ok((ClientId(client_id), seq, op))
 }
 
@@ -181,8 +264,7 @@ pub fn encode_response(response: &ClientResponse) -> Vec<u8> {
     out
 }
 
-/// Decode one client response body (without the length
-/// prefix).
+/// Decode one client response body (without the length prefix).
 ///
 /// # Errors
 /// Returns `NodeError::Unavailable` naming the malformed field
@@ -195,12 +277,18 @@ pub fn decode_response(body: &[u8]) -> Result<ClientResponse, NodeError> {
             &body[0..4.min(body.len())]
         )));
     }
+    let version = u16::from_le_bytes([body[4], body[5]]);
+    if version != VERSION {
+        return Err(bad(format!(
+            "client response version {version}, expected {VERSION}"
+        )));
+    }
     let status = body[6];
     let present = body[7] == 1;
     let data_len = u32::from_le_bytes(body[8..12].try_into().unwrap_or([0; 4])) as usize;
-    if body.len() < 12 + data_len {
+    if body.len() != 12 + data_len {
         return Err(bad(format!(
-            "client response truncated: data length {data_len}, {} remain",
+            "client response length mismatch: header claims {data_len} data bytes, {} present",
             body.len() - 12
         )));
     }
@@ -230,15 +318,17 @@ pub fn decode_response(body: &[u8]) -> Result<ClientResponse, NodeError> {
 ///
 /// # Errors
 /// Returns `NodeError::Unavailable` on I/O failure or a length
-/// that exceeds the sanity bound.
+/// that exceeds [`MAX_CLIENT_BODY_BYTES`].
 pub fn read_message(stream: &mut TcpStream) -> Result<Vec<u8>, NodeError> {
     let mut prefix = [0_u8; 4];
     stream
         .read_exact(&mut prefix)
         .map_err(|e| bad(format!("reading a message length: {e}")))?;
     let len = u32::from_le_bytes(prefix) as usize;
-    if len > 64 * 1024 * 1024 {
-        return Err(bad(format!("message length {len} exceeds the bound")));
+    if len > MAX_CLIENT_BODY_BYTES {
+        return Err(bad(format!(
+            "message length {len} bytes exceeds limit of {MAX_CLIENT_BODY_BYTES} bytes"
+        )));
     }
     let mut body = vec![0_u8; len];
     stream
@@ -250,6 +340,10 @@ pub fn read_message(stream: &mut TcpStream) -> Result<Vec<u8>, NodeError> {
 fn attempt(server: SocketAddr, request: &[u8]) -> Result<ClientResponse, NodeError> {
     let mut stream = TcpStream::connect_timeout(&server, Duration::from_secs(3))
         .map_err(|e| bad(format!("connecting to {server}: {e}")))?;
+    let _ = stream.set_nodelay(true);
+    stream
+        .set_write_timeout(Some(Duration::from_secs(5)))
+        .map_err(|e| bad(format!("setting a write timeout: {e}")))?;
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| bad(format!("setting a read timeout: {e}")))?;
@@ -260,70 +354,146 @@ fn attempt(server: SocketAddr, request: &[u8]) -> Result<ClientResponse, NodeErr
     decode_response(&body)
 }
 
-/// Issue one client operation against the member at `server`,
-/// following redirects and retrying transient failures within
-/// `CLIENT_BUDGET`, as the module documentation describes.
+/// A stateful client session against a `simraft-node` cluster.
+///
+/// Reuses one [`ClientId`] across multiple operations, advancing the
+/// per-client sequence number strictly monotonically on writes (`Put`
+/// and `Delete`) while leaving it untouched on `ReadIndex` reads
+/// (`Get`), and caching the latest leader redirect hint so sequential
+/// operations avoid extra redirect hops.
+#[derive(Debug)]
+pub struct Client {
+    id: ClientId,
+    next_seq: u64,
+    entry: SocketAddr,
+    leader_hint: Option<SocketAddr>,
+    budget: Duration,
+}
+
+impl Client {
+    /// Open a new client session against `server` with a unique
+    /// collision-free [`ClientId`].
+    #[must_use]
+    pub fn new(server: SocketAddr) -> Self {
+        Self::with_id(server, next_client_id())
+    }
+
+    /// Open a client session with an explicit `id`.
+    #[must_use]
+    pub const fn with_id(server: SocketAddr, id: ClientId) -> Self {
+        Self {
+            id,
+            next_seq: 0,
+            entry: server,
+            leader_hint: None,
+            budget: CLIENT_BUDGET,
+        }
+    }
+
+    /// Override the per-operation retry budget.
+    #[must_use]
+    pub const fn with_budget(mut self, budget: Duration) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    /// This session's client identifier.
+    #[must_use]
+    pub const fn id(&self) -> ClientId {
+        self.id
+    }
+
+    /// Execute one operation within this client session.
+    ///
+    /// # Errors
+    /// Returns `NodeError::Unavailable` when the operation exceeds
+    /// the payload bound or fails to complete within the retry budget.
+    pub fn execute(&mut self, op: &ClientOp) -> Result<Option<Vec<u8>>, NodeError> {
+        let is_write = matches!(op, ClientOp::Put { .. } | ClientOp::Delete { .. });
+        let seq = if is_write { self.next_seq + 1 } else { 0 };
+        let request = encode_request(self.id, seq, op)?;
+        if is_write {
+            self.next_seq = seq;
+        }
+        let deadline = Instant::now() + self.budget;
+        let mut target = self.leader_hint.unwrap_or(self.entry);
+        let mut last_detail: String;
+        loop {
+            match attempt(target, &request) {
+                Ok(ClientResponse::Ok(value)) => {
+                    self.leader_hint = Some(target);
+                    return Ok(value);
+                }
+                Ok(ClientResponse::Redirect(Some(addr))) => {
+                    target = addr;
+                    self.leader_hint = Some(addr);
+                    last_detail = format!("redirected to {addr}");
+                }
+                Ok(ClientResponse::Redirect(None)) => {
+                    self.leader_hint = None;
+                    last_detail = format!("{target} knows no leader yet");
+                    target = self.entry;
+                }
+                Ok(ClientResponse::Error(message)) => {
+                    last_detail = format!("{target} reported: {message}");
+                }
+                Err(error) => {
+                    self.leader_hint = None;
+                    last_detail = error.to_string();
+                    target = self.entry;
+                }
+            }
+            if Instant::now() >= deadline {
+                return Err(bad(format!(
+                    "client operation did not complete within {}s: {last_detail}",
+                    self.budget.as_secs()
+                )));
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    /// Store `value` under `key`.
+    ///
+    /// # Errors
+    /// Returns `NodeError::Unavailable` if the write cannot complete.
+    pub fn put(&mut self, key: Vec<u8>, value: Vec<u8>) -> Result<(), NodeError> {
+        self.execute(&ClientOp::Put { key, value }).map(|_| ())
+    }
+
+    /// Linearizably read `key`.
+    ///
+    /// # Errors
+    /// Returns `NodeError::Unavailable` if the read cannot complete.
+    pub fn get(&mut self, key: Vec<u8>) -> Result<Option<Vec<u8>>, NodeError> {
+        self.execute(&ClientOp::Get { key })
+    }
+
+    /// Delete `key`.
+    ///
+    /// # Errors
+    /// Returns `NodeError::Unavailable` if the delete cannot complete.
+    pub fn delete(&mut self, key: Vec<u8>) -> Result<(), NodeError> {
+        self.execute(&ClientOp::Delete { key }).map(|_| ())
+    }
+}
+
+/// Issue one standalone client operation against the member at
+/// `server`, allocating a fresh collision-free [`ClientId`] so
+/// rapid sequential `run_client` calls never collide on `(client_id,
+/// seq = 1)`.
 ///
 /// # Errors
-/// Returns `NodeError::Unavailable` with the last failure's
-/// context when the budget expires or the server reports a
-/// non-transient error.
+/// Returns `NodeError::Unavailable` with the last failure's context
+/// when the budget expires or the request is rejected.
 pub fn run_client(server: SocketAddr, op: &ClientOp) -> Result<Option<Vec<u8>>, NodeError> {
-    // One identity per client invocation: the process id in the
-    // high half, launch-time nanoseconds in the low half. The
-    // sequence is 1 for the single operation this invocation
-    // issues, reused across every retry so the session table
-    // deduplicates a retry of a committed write.
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| u64::from(d.subsec_nanos()));
-    let client_id = ClientId((u64::from(std::process::id()) << 32) | nanos);
-    let request = encode_request(client_id, 1, op);
-    let deadline = Instant::now() + CLIENT_BUDGET;
-    let mut target = server;
-    let mut last_detail: String;
-    loop {
-        match attempt(target, &request) {
-            Ok(ClientResponse::Ok(value)) => return Ok(value),
-            Ok(ClientResponse::Redirect(Some(addr))) => {
-                target = addr;
-                last_detail = format!("redirected to {addr}");
-            }
-            Ok(ClientResponse::Redirect(None)) => {
-                last_detail = format!("{target} knows no leader yet");
-                // Ask the entry member again next time; it may
-                // learn a leader sooner than this member.
-                target = server;
-            }
-            Ok(ClientResponse::Error(message)) => {
-                last_detail = format!("{target} reported: {message}");
-                // A server error here is the not-ready family
-                // (no leader, leadership lost); it is transient
-                // within the budget by the same rule as a
-                // redirect with no hint.
-            }
-            Err(error) => {
-                last_detail = error.to_string();
-                // A transport failure against a redirect target
-                // (a leader that has since died) must not stick:
-                // fall back to the entry member, which issues a
-                // fresh redirect once a new leader exists.
-                target = server;
-            }
-        }
-        if Instant::now() >= deadline {
-            return Err(bad(format!(
-                "client operation did not complete within {}s: {last_detail}",
-                CLIENT_BUDGET.as_secs()
-            )));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
+    Client::new(server).execute(op)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
 
     #[test]
     fn request_and_response_round_trip() {
@@ -331,7 +501,7 @@ mod tests {
             key: b"k1".to_vec(),
             value: b"v1".to_vec(),
         };
-        let bytes = encode_request(ClientId(7), 3, &op);
+        let bytes = encode_request(ClientId(7), 3, &op).expect("encodes");
         let (id, seq, decoded) = decode_request(&bytes[4..]).expect("the request decodes");
         assert_eq!(id, ClientId(7));
         assert_eq!(seq, 3);
@@ -352,6 +522,14 @@ mod tests {
     }
 
     #[test]
+    fn consecutive_client_ids_never_collide() {
+        let mut ids = BTreeSet::new();
+        for _ in 0..10_000 {
+            assert!(ids.insert(next_client_id()), "duplicate ClientId generated");
+        }
+    }
+
+    #[test]
     fn truncated_request_names_the_field() {
         let bytes = encode_request(
             ClientId(7),
@@ -359,12 +537,27 @@ mod tests {
             &ClientOp::Get {
                 key: b"key".to_vec(),
             },
-        );
+        )
+        .expect("encodes");
         let err =
             decode_request(&bytes[4..bytes.len() - 2]).expect_err("a truncated request must fail");
         assert!(
             err.to_string().contains("truncated at key"),
             "the field is named: {err}"
+        );
+    }
+
+    #[test]
+    fn oversized_write_does_not_poison_client_sequence() {
+        let addr: SocketAddr = "127.0.0.1:9".parse().expect("valid addr");
+        let mut client = Client::with_id(addr, ClientId(42)).with_budget(Duration::ZERO);
+        let err = client
+            .put(b"k".to_vec(), vec![0_u8; MAX_PAYLOAD_BYTES])
+            .expect_err("payload above 16 MiB must fail locally");
+        assert!(err.to_string().contains("exceeds limit"));
+        assert_eq!(
+            client.next_seq, 0,
+            "local payload rejection must not burn a sequence number"
         );
     }
 }

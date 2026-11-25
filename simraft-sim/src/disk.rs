@@ -90,7 +90,8 @@ pub struct SimDisk {
 /// Encode one durable log record (section 7.3) for `entry` at
 /// `index`.
 fn encode_log_record(index: LogIndex, entry: &LogEntry) -> Vec<u8> {
-    let body = encode_entry_bytes(entry);
+    let body =
+        encode_entry_bytes(entry).expect("simulated log entry fits within 16 MiB frame limit");
     let record_len = HEADER_LEN + body.len() + CRC_LEN;
     let mut out = Vec::with_capacity(record_len);
     out.extend_from_slice(LOG_MAGIC);

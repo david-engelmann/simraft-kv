@@ -1,23 +1,17 @@
 //! End-to-end behaviors of a real three-node cluster on
-//! localhost (docs/ROADMAP.md Lane 1). These tests are the
-//! lane's contract, landed red at Stage A and green at Stage
-//! B: they spawn the compiled simraft-node binary, drive it
-//! through its client mode, and assert the durability,
-//! failover, and recovery behaviors the adapter promises in
-//! docs/INVARIANTS.md section 10 (rows A-01 to A-03).
+//! localhost (docs/INVARIANTS.md section 10, rows A-01 to A-03,
+//! plus session collision resistance and CLI exit code contracts).
 
-use std::net::TcpListener;
+use std::net::{SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use simraft_node::{Client, ClientOp, run_client};
+
 const BIN: &str = env!("CARGO_BIN_EXE_simraft-node");
 
-/// One cluster at a time across this binary's tests: nine node
-/// processes with fsync-heavy drivers oversubscribe the test
-/// machine, and an unbound ephemeral port can be handed to an
-/// unrelated socket while a node is still starting.
 static CLUSTER_LOCK: Mutex<()> = Mutex::new(());
 
 /// A running cluster of three node processes on ephemeral ports.
@@ -28,11 +22,17 @@ struct Cluster {
     _lock: MutexGuard<'static, ()>,
 }
 
-fn free_addr() -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
-    let addr = listener.local_addr().expect("the listener has an address");
-    drop(listener);
-    addr.to_string()
+/// Bind `count` ephemeral listeners simultaneously before dropping
+/// any of them so the OS never hands out duplicate ports within one
+/// cluster.
+fn reserve_free_addrs(count: usize) -> Vec<String> {
+    let listeners: Vec<TcpListener> = (0..count)
+        .map(|_| TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port"))
+        .collect();
+    listeners
+        .iter()
+        .map(|l| l.local_addr().expect("listener has local_addr").to_string())
+        .collect()
 }
 
 fn data_dir(tag: &str) -> PathBuf {
@@ -41,71 +41,110 @@ fn data_dir(tag: &str) -> PathBuf {
     dir
 }
 
+fn spawn_nodes(tag: &str, attempt: usize, addrs: &[String]) -> (Vec<Child>, Vec<PathBuf>) {
+    let specs: Vec<String> = addrs
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| format!("{}@{}", i + 1, addr))
+        .collect();
+    let mut children = Vec::new();
+    let mut dirs = Vec::new();
+    for i in 0..3 {
+        let dir = data_dir(&format!("{tag}-{attempt}-{i}"));
+        let mut cmd = Command::new(BIN);
+        cmd.arg("serve")
+            .arg("--id")
+            .arg(format!("{}", i + 1))
+            .arg("--data-dir")
+            .arg(&dir)
+            .arg("--tick-ms")
+            .arg("10")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        for spec in &specs {
+            cmd.arg("--member").arg(spec);
+        }
+        children.push(cmd.spawn().expect("spawn a node process"));
+        dirs.push(dir);
+    }
+    (children, dirs)
+}
+
+fn cleanup_attempt(children: &mut [Child], dirs: &[PathBuf]) {
+    for child in children {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    for dir in dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+fn wait_children_ready(
+    children: &mut [Child],
+    addrs: &[String],
+    indices: &[usize],
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    for &i in indices {
+        loop {
+            if Instant::now() >= deadline {
+                return Err(format!("node {} did not become ready in time", i + 1));
+            }
+            if client_probe(&addrs[i]) {
+                break;
+            }
+            if let Some(status) = children[i].try_wait().expect("poll the node process") {
+                return Err(format!(
+                    "node {} exited with {status} before serving",
+                    i + 1
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+    Ok(())
+}
+
 impl Cluster {
     fn start(tag: &str) -> Self {
-        // A panicked sibling test must not cascade: the lock
-        // guards no shared state, only serialization.
+        let probe = TcpListener::bind("127.0.0.1:0").expect("bind loopback probe listener");
+        let probe_addr = probe.local_addr().expect("loopback listener local_addr");
+        if let Err(err) = std::net::TcpStream::connect_timeout(&probe_addr, Duration::from_secs(1))
+        {
+            panic!(
+                "loopback TCP connect to {probe_addr} failed ({err}); multi-process simraft-node TCP tests require loopback socket access"
+            );
+        }
+        drop(probe);
         let lock = CLUSTER_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let addrs: Vec<String> = (0..3).map(|_| free_addr()).collect();
-        let specs: Vec<String> = addrs
-            .iter()
-            .enumerate()
-            .map(|(i, addr)| format!("{}@{}", i + 1, addr))
-            .collect();
-        let mut children = Vec::new();
-        let mut dirs = Vec::new();
-        for i in 0..3 {
-            let dir = data_dir(&format!("{tag}-{i}"));
-            let mut cmd = Command::new(BIN);
-            cmd.arg("serve")
-                .arg("--id")
-                .arg(format!("{}", i + 1))
-                .arg("--data-dir")
-                .arg(&dir)
-                .arg("--tick-ms")
-                .arg("10")
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-            for spec in &specs {
-                cmd.arg("--member").arg(spec);
+        let mut last_err = String::new();
+        for attempt in 0..5 {
+            let addrs = reserve_free_addrs(3);
+            let (mut children, dirs) = spawn_nodes(tag, attempt, &addrs);
+            match wait_children_ready(&mut children, &addrs, &[0, 1, 2]) {
+                Ok(()) => {
+                    return Self {
+                        children,
+                        addrs,
+                        dirs,
+                        _lock: lock,
+                    };
+                }
+                Err(err) => {
+                    cleanup_attempt(&mut children, &dirs);
+                    last_err = err;
+                }
             }
-            children.push(cmd.spawn().expect("spawn a node process"));
-            dirs.push(dir);
         }
-        let mut cluster = Self {
-            children,
-            addrs,
-            dirs,
-            _lock: lock,
-        };
-        cluster.wait_ready();
-        cluster
+        panic!("cluster failed to start after 5 attempts: {last_err}");
     }
 
-    /// Wait until every node process is serving. A node that
-    /// exits first fails the test at once with its own output.
     fn wait_ready(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(30);
-        for i in 0..self.children.len() {
-            // Readiness is probed through the client contract:
-            // poll a Get against each member until it answers or
-            // the process exits.
-            loop {
-                assert!(
-                    Instant::now() < deadline,
-                    "node {} did not become ready in time",
-                    i + 1
-                );
-                if client_get(&self.addrs[i], "readiness-probe").is_ok() {
-                    break;
-                }
-                if let Some(status) = self.children[i].try_wait().expect("poll the node process") {
-                    panic!("node {} exited with {status} before serving", i + 1);
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
+        if let Err(err) = wait_children_ready(&mut self.children, &self.addrs, &[0, 1, 2]) {
+            panic!("{err}");
         }
     }
 
@@ -140,14 +179,19 @@ impl Cluster {
 
 impl Drop for Cluster {
     fn drop(&mut self) {
-        for child in &mut self.children {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-        for dir in &self.dirs {
-            let _ = std::fs::remove_dir_all(dir);
-        }
+        cleanup_attempt(&mut self.children, &self.dirs);
     }
+}
+
+/// Probe whether `server` can complete a linearizable `ReadIndex`
+/// read: exit code 0 (key present) and exit code 1 (key confirmed
+/// absent) both prove the node is serving.
+fn client_probe(server: &str) -> bool {
+    let output = Command::new(BIN)
+        .args(["client", "--server", server, "get", "readiness-probe"])
+        .output()
+        .expect("run the client probe");
+    matches!(output.status.code(), Some(0 | 1))
 }
 
 fn client(args: &[&str]) -> Result<String, String> {
@@ -197,8 +241,6 @@ fn read_after_failover_returns_latest_committed() {
     client_put(&cluster.addrs[0], "k", "first").expect("the first write commits");
     client_put(&cluster.addrs[0], "k", "second").expect("the second write commits");
     cluster.kill(0);
-    // The surviving members elect a successor; reads through any
-    // of them must observe the second value.
     let value = client_get(&cluster.addrs[1], "k")
         .expect("a read through a survivor is served after the failover");
     assert_eq!(
@@ -227,4 +269,107 @@ fn restarted_node_catches_up() {
         value, "while-third-was-down",
         "A-03: the restarted node caught up to the current state"
     );
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the cluster guard is the serialization lock and must live until the cluster is torn down at the end of the test"
+)]
+fn rapid_sequential_run_client_puts_all_persist_without_collision() {
+    let cluster = Cluster::start("rapid-puts");
+    let server: SocketAddr = cluster.addrs[0].parse().expect("valid socket addr");
+
+    // 20 rapid sequential one-shot `run_client` puts in the same process:
+    // none may share (client_id, seq = 1) and silently drop a write.
+    for i in 1..=20_u32 {
+        let key = format!("rapid-{i:02}").into_bytes();
+        let val = format!("val-{i:02}").into_bytes();
+        run_client(server, &ClientOp::Put { key, value: val })
+            .unwrap_or_else(|e| panic!("rapid put {i} failed: {e}"));
+    }
+    for i in 1..=20_u32 {
+        let key = format!("rapid-{i:02}").into_bytes();
+        let expected = format!("val-{i:02}").into_bytes();
+        let got = run_client(server, &ClientOp::Get { key })
+            .unwrap_or_else(|e| panic!("rapid get {i} failed: {e}"));
+        assert_eq!(
+            got.as_deref(),
+            Some(expected.as_slice()),
+            "rapid put {i} must not be dropped by session collision"
+        );
+    }
+
+    // Also verify stateful `Client` session across Put -> Get -> Put -> Delete -> Get.
+    let mut session = Client::new(server);
+    session
+        .put(b"session-key".to_vec(), b"alpha".to_vec())
+        .expect("session put 1");
+    assert_eq!(
+        session.get(b"session-key".to_vec()).expect("session get 1"),
+        Some(b"alpha".to_vec())
+    );
+    session
+        .put(b"session-key".to_vec(), b"beta".to_vec())
+        .expect("session put 2");
+    assert_eq!(
+        session.get(b"session-key".to_vec()).expect("session get 2"),
+        Some(b"beta".to_vec())
+    );
+    session
+        .delete(b"session-key".to_vec())
+        .expect("session delete");
+    assert_eq!(
+        session.get(b"session-key".to_vec()).expect("session get 3"),
+        None
+    );
+}
+
+#[test]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the cluster guard is the serialization lock and must live until the cluster is torn down at the end of the test"
+)]
+fn cli_get_distinguishes_missing_key_from_ok_value() {
+    let cluster = Cluster::start("cli-ux");
+    let server = &cluster.addrs[0];
+
+    let missing = Command::new(BIN)
+        .args(["client", "--server", server, "get", "absent"])
+        .output()
+        .expect("run get on missing key");
+    assert_eq!(
+        missing.status.code(),
+        Some(1),
+        "missing key must exit with code 1"
+    );
+    assert!(
+        missing.stdout.is_empty(),
+        "missing key must print nothing to stdout"
+    );
+    assert!(
+        String::from_utf8_lossy(&missing.stderr).contains("key not found"),
+        "missing key stderr must report key not found"
+    );
+
+    client_put(server, "literal-ok", "ok").expect("put literal ok");
+    let present = Command::new(BIN)
+        .args(["client", "--server", server, "get", "literal-ok"])
+        .output()
+        .expect("run get on literal-ok");
+    assert_eq!(present.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&present.stdout).trim(), "ok");
+
+    let deleted = Command::new(BIN)
+        .args(["client", "--server", server, "delete", "literal-ok"])
+        .output()
+        .expect("run delete");
+    assert_eq!(deleted.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&deleted.stdout).trim(), "ok");
+
+    let after_delete = Command::new(BIN)
+        .args(["client", "--server", server, "get", "literal-ok"])
+        .output()
+        .expect("run get after delete");
+    assert_eq!(after_delete.status.code(), Some(1));
 }

@@ -1,19 +1,5 @@
 name: Weekly seed sweep (100,000 seeds)
 
-# Post-M4 Lane 2 (docs/ROADMAP.md): the long tail of the seed
-# space is explored continuously, not once. Ten shards of 10,000
-# seeds each cover seeds 0..100,000 every week; each shard runs
-# the same batch loop as the CI seed sweep (one process per 100
-# seeds, the seed printed on the first line per D-03, a nonzero
-# exit on any failed seed). A failing shard names its seed
-# range, and any failing seed replays locally with that single
-# value.
-#
-# The scenario-sweep job runs the Lane 2 adversarial scenarios
-# under widened seed batches (SIM_SWEEP_WIDE=1: the original
-# seed plus 100 swept seeds per scenario, in release), the
-# volume tranche of the scenario seed-sweep lane.
-
 on:
   schedule:
     - cron: "17 5 * * 1"
@@ -35,20 +21,28 @@ jobs:
       matrix:
         base: [0, 10000, 20000, 30000, 40000, 50000, 60000, 70000, 80000, 90000]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.100.0"
-          components: rustfmt, clippy
-      - name: Run 10,000 seeds
+      - name: Cache Cargo artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-weekly-sweep-1.100.0-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run 10,000 chaos seeds
         run: |
-          cargo build -p simraft-sim --release
+          cargo build -p simraft-sim --release --locked
           step=100
           end=$(( ${{ matrix.base }} + 10000 ))
           for (( base=${{ matrix.base }}; base<end; base+=step )); do
             SIM_SEED=$base ./target/release/simraft-sim \
-              --seed "$base" --seeds "$step" --json > "sweep-$base.json"
+              --seed "$base" --seeds "$step" --chaos --json > "sweep-$base.json"
             head -1 "sweep-$base.json"
           done
 
@@ -57,11 +51,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.100.0"
-          components: rustfmt, clippy
+      - name: Cache Cargo artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-scenario-sweep-1.100.0-${{ hashFiles('**/Cargo.lock') }}
       - name: Run the scenario seed sweep wide
-        run: SIM_SWEEP_WIDE=1 cargo test --release -p simraft-sim --test scenario_seed_sweep
+        run: SIM_SWEEP_WIDE=1 cargo test --release --locked -p simraft-sim --test scenario_seed_sweep

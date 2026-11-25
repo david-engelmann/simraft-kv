@@ -1,15 +1,13 @@
-//! Stats snapshot contract (post-M4 Lane 4 Stage A): a driver
-//! can read the node's whole operating state as data through
-//! `Node::stats`, without stepping the node or inferring state
-//! from the actions it emits.
+//! Stats snapshot contract (invariant O-01): a driver can read
+//! the node's whole operating state as data through `Node::stats`,
+//! without stepping the node or inferring state from the actions
+//! it emits.
 //!
-//! The snapshot is the node's own accessor values at one instant,
-//! gathered into one struct: role, current term, the acknowledged
-//! leader, the commit and applied indexes, the last log index,
-//! the snapshot base, and, on a leader, every peer's replication
-//! progress. These tests are the designed red of Lane 4 Stage A:
-//! `NodeStats` does not exist yet, so this file does not compile
-//! against the unmodified core.
+//! The snapshot gathers the node's own accessor values at one
+//! instant into one struct: role, current term, the acknowledged
+//! leader, the commit and applied indexes, the last log index, the
+//! snapshot base, and, on a leader, every peer's replication
+//! progress.
 
 use std::collections::BTreeMap;
 

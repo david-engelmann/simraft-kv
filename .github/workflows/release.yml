@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-archives:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+            archive: tar.gz
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ""
+            archive: tar.gz
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ""
+            archive: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+            archive: zip
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.100.0"
+          targets: ${{ matrix.target }}
+      - name: Cache Cargo artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-release-${{ matrix.target }}-1.100.0-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build release binaries
+        run: |
+          cargo build --release --locked --target ${{ matrix.target }} -p simraft-node -p simraft-sim
+      - name: Package Unix archives
+        if: matrix.archive == 'tar.gz'
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          if [[ "$tag" != v* ]]; then
+            tag="v0.1.0"
+          fi
+          mkdir -p dist
+          for bin in simraft-node simraft-sim; do
+            stage="stage-${bin}"
+            mkdir -p "$stage"
+            cp "target/${{ matrix.target }}/release/${bin}" "$stage/"
+            cp LICENSE-MIT LICENSE-APACHE README.md "$stage/"
+            tar -C "$stage" -czf "dist/${bin}-${tag}-${{ matrix.target }}.tar.gz" \
+              "${bin}" LICENSE-MIT LICENSE-APACHE README.md
+          done
+      - name: Package Windows archives
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          if (-not $tag.StartsWith("v")) {
+            $tag = "v0.1.0"
+          }
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          foreach ($bin in @("simraft-node", "simraft-sim")) {
+            $stage = "stage-$bin"
+            New-Item -ItemType Directory -Force -Path $stage | Out-Null
+            Copy-Item "target/${{ matrix.target }}/release/$bin.exe" "$stage/"
+            Copy-Item LICENSE-MIT, LICENSE-APACHE, README.md "$stage/"
+            Compress-Archive -Path "$stage/*" -DestinationPath "dist/$bin-$tag-${{ matrix.target }}.zip" -Force
+          }
+      - name: Upload target archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: archives-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish release and SHA256SUMS
+    needs: build-archives
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Download all target archives
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Generate and verify SHA256SUMS
+        run: |
+          cd artifacts
+          sha256sum * > SHA256SUMS
+          sha256sum --check SHA256SUMS
+          cat SHA256SUMS
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" artifacts/* --clobber
+          else
+            gh release create "$tag" artifacts/* --title "$tag" --generate-notes
+          fi

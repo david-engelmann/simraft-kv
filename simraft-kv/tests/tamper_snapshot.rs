@@ -2,9 +2,11 @@
 //!
 //! A snapshot whose SHA-256 digest (domain `simraft-kv/snapshot/v1`)
 //! does not match its payload is rejected whole, with the expected
-//! and actual digests named in the error.
+//! and actual digests named in the error, and a snapshot body with
+//! trailing undecoded bytes before a valid digest is rejected.
 
 use simraft_core::{ClusterConfig, EntryKind, LogEntry, LogIndex, NodeId, Term};
+use simraft_kv::snapshot::snapshot_digest;
 use simraft_kv::{KvError, KvOp, KvStateMachine, decode_snapshot, encode_command, encode_snapshot};
 
 fn entry(seq_client: (u64, u64), op: &KvOp) -> LogEntry {
@@ -14,7 +16,7 @@ fn entry(seq_client: (u64, u64), op: &KvOp) -> LogEntry {
         kind: EntryKind::Command {
             client_id: simraft_core::ClientId(client),
             seq,
-            payload: encode_command(simraft_core::ClientId(client), seq, op),
+            payload: encode_command(simraft_core::ClientId(client), seq, op).expect("encodes"),
         },
     }
 }
@@ -36,7 +38,7 @@ fn snapshot_bytes() -> Vec<u8> {
         .expect("apply 3");
     let config =
         ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], std::iter::empty()).expect("config");
-    encode_snapshot(&machine.snapshot_parts(LogIndex(3), Term(1), &config))
+    encode_snapshot(&machine.snapshot_parts(LogIndex(3), Term(1), &config)).expect("snapshot")
 }
 
 #[test]
@@ -47,7 +49,6 @@ fn single_byte_flip_is_rejected_with_digests() {
         "the untampered snapshot must decode"
     );
 
-    // Flip one payload byte (inside the store section).
     let mut tampered = bytes.clone();
     tampered[20] ^= 0xFF;
     match decode_snapshot(&tampered) {
@@ -55,14 +56,12 @@ fn single_byte_flip_is_rejected_with_digests() {
             assert_ne!(expected, actual, "the two digests must differ");
             assert_eq!(expected.len(), 64, "expected digest is full hex SHA-256");
             assert_eq!(actual.len(), 64, "actual digest is full hex SHA-256");
-            // The expected digest is the one stored in the snapshot.
             let stored = simraft_kv::snapshot::hex(&bytes[bytes.len() - 32..]);
             assert_eq!(expected, stored);
         }
         other => panic!("expected a SnapshotDigest rejection, got {other:?}"),
     }
 
-    // Flip one byte of the stored digest itself.
     let mut tampered = bytes.clone();
     let last = tampered.len() - 1;
     tampered[last] ^= 0x01;
@@ -74,9 +73,22 @@ fn single_byte_flip_is_rejected_with_digests() {
         "a tampered digest is also a rejection"
     );
 
-    // A truncated payload is an offset-exact error, never a panic.
     assert!(matches!(
         decode_snapshot(&bytes[..16]),
         Err(KvError::Truncated { .. })
     ));
+
+    // Trailing bytes inside the body with a recomputed digest must be rejected.
+    let mut with_trailing = bytes[..bytes.len() - 32].to_vec();
+    let body_len = with_trailing.len();
+    with_trailing.extend_from_slice(&[0xDE, 0xAD, 0xBE]);
+    let recomputed = snapshot_digest(&with_trailing);
+    with_trailing.extend_from_slice(&recomputed);
+    assert_eq!(
+        decode_snapshot(&with_trailing),
+        Err(KvError::TrailingBytes {
+            offset: body_len,
+            extra: 3,
+        })
+    );
 }

@@ -30,7 +30,7 @@ use crate::history::{History, Op, OpResult};
 use crate::liz::{Checker, Verdict};
 use crate::oracle::{NodeView, OracleState, OracleViolation};
 use crate::rng::Rng;
-use crate::trace::{Trace, digest_hex};
+use crate::trace::{LOG_DIGEST_DOMAIN, STATE_DIGEST_DOMAIN, Trace, domain_digest_hex};
 use crate::wire::{decode_frame, encode_frame};
 
 /// Everything a run is configured with. The seed alone decides the
@@ -102,8 +102,14 @@ pub struct RunReport {
     /// Whether every live node ended with identical log digests
     /// and identical state digests.
     pub converged: bool,
+    /// Whether the cluster reached one stable leader within
+    /// `3 * max_election_timeout` ticks of healing start and kept
+    /// that leader for the remainder of the healing phase
+    /// (invariant H-02).
+    pub leader_converged: bool,
     /// The SHA-256 over all nodes' canonical final state bytes, in
-    /// node order (invariant D-01's comparison value).
+    /// node order, domain-separated by `"simraft-kv/state-digest/v1"`
+    /// (invariant D-01's comparison value).
     pub state_digest: String,
     /// The linearizability verdict over the recorded history.
     pub verdict: Verdict,
@@ -123,12 +129,14 @@ pub struct RunReport {
 }
 
 impl RunReport {
-    /// Whether the run is a full pass: completed, converged, no
-    /// oracle failure, and a linearizable history.
+    /// Whether the run is a full pass: completed, converged in log
+    /// and state, converged to one stable leader within the H-02
+    /// bound, no oracle failure, and a linearizable history.
     #[must_use]
     pub fn passed(&self) -> bool {
         self.completed
             && self.converged
+            && self.leader_converged
             && self.oracle_failure.is_none()
             && self.verdict == Verdict::Linearizable
     }
@@ -178,8 +186,6 @@ const COMPACT_THRESHOLD: u64 = 16;
 /// Client operations stop being issued this many ticks before the
 /// end, so replication settles before the convergence check.
 const QUIESCE_TICKS: u64 = 300;
-/// The per-machine client session capacity (the dedup table bound).
-const SESSION_CAPACITY: usize = 1_024;
 
 #[derive(Debug, Clone, Copy)]
 enum FsyncKind {
@@ -254,6 +260,7 @@ struct Driver<'a> {
     trace: Trace,
     leader_history: Vec<(u64, NodeId, Term)>,
     current_leader: Option<(NodeId, Term)>,
+    stable_leader: Option<(NodeId, Term, u64)>,
     clients: Vec<ClientSim>,
     open_writes: BTreeMap<(ClientId, u64), OpenOp>,
     open_reads: BTreeMap<u64, OpenOp>,
@@ -272,6 +279,8 @@ struct Driver<'a> {
     /// Whether the healing phase has begun (its end is budgeted
     /// from that moment).
     heal_started: bool,
+    /// Virtual tick at which the healing phase began.
+    heal_start_tick: u64,
 }
 
 impl<'a> Driver<'a> {
@@ -287,7 +296,7 @@ impl<'a> Driver<'a> {
                 id,
                 NodeSim {
                     node,
-                    machine: KvStateMachine::new(SESSION_CAPACITY),
+                    machine: KvStateMachine::with_max_sessions(config.core.max_sessions),
                     disk: SimDisk::new(),
                     alive: true,
                     epoch: 0,
@@ -318,6 +327,7 @@ impl<'a> Driver<'a> {
             trace: Trace::new(),
             leader_history: Vec::new(),
             current_leader: None,
+            stable_leader: None,
             clients,
             open_writes: BTreeMap::new(),
             open_reads: BTreeMap::new(),
@@ -331,6 +341,7 @@ impl<'a> Driver<'a> {
             run_end: config.chaos_ticks + config.heal_ticks,
             chain_budget: 0,
             heal_started: false,
+            heal_start_tick: 0,
         }
     }
 
@@ -347,6 +358,7 @@ impl<'a> Driver<'a> {
             }
             if !self.heal_started && !self.in_chaos() {
                 self.heal_started = true;
+                self.heal_start_tick = self.now;
                 self.run_end = self.now + self.config.heal_ticks;
                 self.trace.push(self.now, "healing begins");
             }
@@ -502,7 +514,7 @@ impl<'a> Driver<'a> {
                 sim.disk.durable_snapshot().cloned(),
             )
         };
-        let mut machine = KvStateMachine::new(SESSION_CAPACITY);
+        let mut machine = KvStateMachine::with_max_sessions(self.config.core.max_sessions);
         // A durable snapshot whose payload verifies installs
         // into the machine here, and its boundary installs into
         // the core through the Restored event itself (invariant
@@ -585,10 +597,10 @@ impl<'a> Driver<'a> {
                 }
             }
             SimEvent::Deliver { to, frame } => {
-                if self.nodes.get(&to).is_some_and(|n| n.alive) {
-                    if let Ok((from, _, msg)) = decode_frame(&frame) {
-                        self.step_node(to, Event::Message { from, msg });
-                    }
+                if self.nodes.get(&to).is_some_and(|n| n.alive)
+                    && let Ok((from, _, msg)) = decode_frame(&frame)
+                {
+                    self.step_node(to, Event::Message { from, msg });
                 }
             }
             SimEvent::Fsync { node, epoch, kind } => {
@@ -664,10 +676,10 @@ impl<'a> Driver<'a> {
                     // snapshot the install restores exactly the
                     // state the machine already holds (post-M4
                     // Lane 2, invariant H-08).
-                    if let Ok(parts) = simraft_kv::decode_snapshot(&data) {
-                        if let Some(sim) = self.nodes.get_mut(&id) {
-                            sim.machine.install_snapshot(parts);
-                        }
+                    if let Ok(parts) = simraft_kv::decode_snapshot(&data)
+                        && let Some(sim) = self.nodes.get_mut(&id)
+                    {
+                        sim.machine.install_snapshot(parts);
                     }
                     self.step_node(id, Event::SnapshotPersisted { meta });
                 }
@@ -793,16 +805,17 @@ impl<'a> Driver<'a> {
             return;
         }
         let now = self.now;
-        if self
-            .config
-            .faults
-            .partitions
-            .iter()
-            .any(|cut| cut.denies(from, to, now))
+        let chaos = self.in_chaos();
+        if chaos
+            && self
+                .config
+                .faults
+                .partitions
+                .iter()
+                .any(|cut| cut.denies(from, to, now))
         {
             return;
         }
-        let chaos = self.in_chaos();
         if chaos && self.rng.per_mille(self.config.faults.drop_per_mille) {
             return;
         }
@@ -817,7 +830,9 @@ impl<'a> Driver<'a> {
         } else {
             1
         };
-        let mut frame = encode_frame(from, to, msg);
+        let Ok(mut frame) = encode_frame(from, to, msg) else {
+            return;
+        };
         // Frame corruption (post-M4 Lane 2, invariant H-04): one
         // seeded bit flips in the encoded frame. The draw sits in
         // a fixed position in the send path's call order (after
@@ -1016,9 +1031,11 @@ impl<'a> Driver<'a> {
                             key: key.clone(),
                             value: value.clone(),
                         },
-                    ),
+                    )
+                    .expect("command encodes"),
                     Op::Delete { key } => {
                         encode_command(client_id, seq, &KvOp::Delete { key: key.clone() })
+                            .expect("command encodes")
                     }
                     Op::Get { .. } => return,
                 };
@@ -1030,6 +1047,21 @@ impl<'a> Driver<'a> {
                         payload,
                     },
                 );
+            }
+            simraft_core::ClientResult::Rejected { error } => {
+                if let Some(open) = self.open_writes.remove(&(client_id, seq)) {
+                    self.client_free(open.client);
+                    self.history.complete(
+                        open.record,
+                        self.now,
+                        OpResult::Error(error.to_string()),
+                    );
+                    if let Some(sim) = self.clients.get_mut(open.client)
+                        && sim.seq == seq
+                    {
+                        sim.seq -= 1;
+                    }
+                }
             }
         }
     }
@@ -1067,7 +1099,7 @@ impl<'a> Driver<'a> {
                                 meta.last_included_term,
                                 sim.node.cluster(),
                             );
-                            encode_snapshot(&parts)
+                            encode_snapshot(&parts).expect("snapshot encodes")
                         })
                 }
             }
@@ -1097,7 +1129,7 @@ impl<'a> Driver<'a> {
                         last_included_term: term,
                         config: sim.node.cluster().clone(),
                     },
-                    encode_snapshot(&parts),
+                    encode_snapshot(&parts).expect("snapshot encodes"),
                 ))
             } else {
                 None
@@ -1191,7 +1223,7 @@ impl<'a> Driver<'a> {
                 (Op::Delete { key: key.clone() }, KvOp::Delete { key })
             };
             let record = self.history.invoke(client_id.0, self.now, op);
-            let payload = encode_command(client_id, seq, &kv);
+            let payload = encode_command(client_id, seq, &kv).expect("command encodes");
             self.open_writes.insert(
                 (client_id, seq),
                 OpenOp {
@@ -1213,10 +1245,10 @@ impl<'a> Driver<'a> {
     }
 
     fn pick_target(&mut self) -> Option<NodeId> {
-        if let Some((leader, _)) = self.current_leader {
-            if self.nodes.get(&leader).is_some_and(|n| n.alive) {
-                return Some(leader);
-            }
+        if let Some((leader, _)) = self.current_leader
+            && self.nodes.get(&leader).is_some_and(|n| n.alive)
+        {
+            return Some(leader);
         }
         let alive: Vec<NodeId> = self
             .nodes
@@ -1282,6 +1314,12 @@ impl<'a> Driver<'a> {
                 self.trace
                     .push(self.now, &format!("leader {} {}", current.0, current.1));
             }
+            match self.stable_leader {
+                Some((id, term, _)) if (id, term) == current => {}
+                _ => self.stable_leader = Some((current.0, current.1, self.now)),
+            }
+        } else {
+            self.stable_leader = None;
         }
     }
 
@@ -1315,7 +1353,7 @@ impl<'a> Driver<'a> {
                 }
             }
         }
-        digest_hex(&bytes)
+        domain_digest_hex(LOG_DIGEST_DOMAIN, &bytes)
     }
 
     /// Whether two nodes hold the same logical log, allowing
@@ -1359,7 +1397,8 @@ impl<'a> Driver<'a> {
         let parts = sim
             .machine
             .snapshot_parts(applied, term, sim.node.cluster());
-        digest_hex(&encode_snapshot(&parts))
+        let encoded = encode_snapshot(&parts).expect("snapshot encodes");
+        domain_digest_hex(STATE_DIGEST_DOMAIN, &encoded)
     }
 
     fn finish(&mut self, oracle_failure: Option<OracleViolation>, completed: bool) -> RunReport {
@@ -1393,6 +1432,16 @@ impl<'a> Driver<'a> {
                                 && Self::state_digest_node(n) == Self::state_digest_node(members[0])
                         })
                 });
+        let heal_bound = 3 * self.config.core.max_election_timeout;
+        let leader_converged = oracle_failure.is_none()
+            && (self.run_end < self.config.core.max_election_timeout
+                || self.stable_leader.is_some_and(|(id, _term, since)| {
+                    self.nodes
+                        .get(&id)
+                        .is_some_and(|n| n.alive && n.node.role() == Role::Leader)
+                        && (!self.heal_started
+                            || since.saturating_sub(self.heal_start_tick) <= heal_bound)
+                }));
         let mut digest_bytes = Vec::new();
         for (id, sim) in &self.nodes {
             digest_bytes.extend_from_slice(&id.0.to_le_bytes());
@@ -1401,8 +1450,8 @@ impl<'a> Driver<'a> {
         }
         let verdict =
             Checker::with_budget(self.config.checker_budget).check(self.history.records());
-        let (final_leader, final_leader_term) = match self.current_leader {
-            Some((id, term))
+        let (final_leader, final_leader_term) = match self.stable_leader {
+            Some((id, term, _))
                 if self
                     .nodes
                     .get(&id)
@@ -1420,7 +1469,8 @@ impl<'a> Driver<'a> {
             final_leader_term,
             leader_history: std::mem::take(&mut self.leader_history),
             converged,
-            state_digest: digest_hex(&digest_bytes),
+            leader_converged,
+            state_digest: domain_digest_hex(STATE_DIGEST_DOMAIN, &digest_bytes),
             verdict,
             oracle_failure,
             history: std::mem::take(&mut self.history),

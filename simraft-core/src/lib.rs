@@ -3,18 +3,19 @@
 //! A [`Node`] consumes [`Event`] values and returns [`Action`] values.
 //! It reads no clock, opens no socket, touches no disk, spawns no
 //! thread, and draws no randomness from the operating system. Drivers
-//! (the deterministic simulator in simraft-sim, or a future I/O adapter)
-//! supply time, transport, storage, and seeds, which is what makes the
-//! whole cluster reproducible from a single seed.
+//! (the deterministic simulator in `simraft-sim` and the TCP/file
+//! adapter in `simraft-node`) supply time, transport, storage, and
+//! seeds, which is what makes the whole cluster reproducible from a
+//! single seed.
 //!
-//! Implemented at M1: leader election with Pre-Vote, log replication
-//! with conflict-term fast backup, monotonic match tracking, and
-//! persist-before-response ordering. M2 added the Figure 8 commitment
-//! suite, `ReadIndex`, and client deduplication. M3 adds snapshots,
-//! chunked `InstallSnapshot`, and single-server membership changes.
+//! Protocol features: leader election with Pre-Vote, log replication
+//! with conflict-term fast backup, monotonic match tracking,
+//! persist-before-response ordering, Figure 8 commitment, clock-free
+//! linearizable reads via `ReadIndex`, in-flight client deduplication,
+//! snapshots with chunked `InstallSnapshot` transfer, and single-server
+//! membership changes.
 //!
-//! This crate is strictly std-only (DECISIONS Q5) and forbids unsafe
-//! code.
+//! This crate depends only on `std` and forbids unsafe code.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]

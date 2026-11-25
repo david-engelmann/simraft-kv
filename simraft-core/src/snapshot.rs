@@ -42,7 +42,7 @@ impl IncomingSnapshot {
     }
 
     /// The offset the next accepted chunk must carry.
-    pub fn expected_offset(&self) -> u64 {
+    pub const fn expected_offset(&self) -> u64 {
         self.data.len() as u64
     }
 }

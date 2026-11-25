@@ -5,17 +5,17 @@
 
 //! Step allocation budget (invariant L-03): `Node::step`
 //! allocates within a measured per-event-class budget, verified
-//! with a counting allocator in this bench harness. Tick, vote,
-//! and response handling allocate at most a small constant number
-//! of allocations; `AppendEntries` handling may allocate in
-//! proportion to the batch it accepts. The budgets below are the
-//! recorded bounds; a regression fails CI's bench smoke run
-//! (`cargo bench --workspace -- --test` executes the same
-//! assertions once per bench).
+//! with a thread-local counting allocator in this bench harness.
+//! Tick, vote, and response handling allocate at most a small
+//! constant number of allocations; `AppendEntries` handling may
+//! allocate in proportion to the batch it accepts. The budgets
+//! below are the recorded bounds; a regression fails CI's bench
+//! smoke run (`cargo bench --workspace -- --test` executes the
+//! same assertions once per bench).
 
 use std::alloc::{GlobalAlloc, Layout, System};
+use std::cell::Cell;
 use std::hint::black_box;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use simraft_core::{
@@ -24,11 +24,13 @@ use simraft_core::{
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
+}
 
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        let _ = ALLOCATIONS.try_with(|count| count.set(count.get().saturating_add(1)));
         // SAFETY: forwards to the system allocator with the same
         // layout the caller provided.
         unsafe { System.alloc(layout) }
@@ -44,24 +46,20 @@ unsafe impl GlobalAlloc for Counting {
 static GLOBAL: Counting = Counting;
 
 fn allocations_around(f: impl FnOnce()) -> usize {
-    ALLOCATIONS.store(0, Ordering::Relaxed);
+    ALLOCATIONS.with(|count| count.set(0));
     f();
-    ALLOCATIONS.load(Ordering::Relaxed)
+    ALLOCATIONS.with(Cell::get)
 }
 
 /// The recorded per-class budgets (allocations per step).
 ///
-/// Tightened on 2026-11-24 (the L-03 register item deferred
-/// by Lane 3 until the values held for a full release cycle).
-/// Full criterion runs on main at 5d3c9cc1 measured single-shot
-/// counts of tick 0, vote 2, append 10 and loop maxima of
-/// tick 2, vote 2, append 10, matching the Lane 3 values from
-/// 2026-11-20 exactly. The budgets sit at the loop maxima
-/// plus a small margin, so a new allocation habit in a step
-/// path fails the bench instead of slipping through.
+/// The append budget reflects hoisting the harness's input
+/// message clone out of the measured region and eliminating the
+/// duplicate entry clone in `Node::emit_applies` and slice
+/// persistence in `Node::merge_and_commit`.
 const TICK_BUDGET: usize = 4;
 const VOTE_BUDGET: usize = 4;
-const APPEND_BUDGET: usize = 16;
+const APPEND_BUDGET: usize = 7;
 
 fn node(id: u64) -> Node {
     let cfg = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
@@ -107,9 +105,8 @@ fn leader() -> Node {
 
 /// Measure each event class once and print the counts, so a
 /// recorded run of this bench yields the values the L-03
-/// budgets are tightened against (the post-M4 Lane 3
-/// measurement protocol). The budgets themselves stay asserted
-/// inside the timed benches below.
+/// budgets are tightened against. The budgets themselves stay
+/// asserted inside the timed benches below.
 fn report_measured_counts() {
     let mut tick_node = node(2);
     let tick_count = allocations_around(|| {
@@ -152,7 +149,7 @@ fn report_measured_counts() {
     let append_count = allocations_around(|| {
         follower.step(Event::Message {
             from: NodeId(1),
-            msg: message.clone(),
+            msg: message,
         });
     });
     println!(
@@ -198,10 +195,6 @@ fn bench_step_allocations(c: &mut Criterion) {
     });
     group.bench_function("append_entries_one", |b| {
         let mut leader = leader();
-        // The proposal's sends are released only once the entry is
-        // persisted (persist-before-response), so acknowledge the
-        // persist first and take the AppendEntries from the
-        // released actions.
         leader.step(Event::Propose {
             client_id: simraft_core::ClientId(1),
             seq: 1,
@@ -224,13 +217,12 @@ fn bench_step_allocations(c: &mut Criterion) {
             .expect("the leader sends AppendEntries");
         b.iter(|| {
             let mut follower = node(2);
-            // Bring the follower to the leader's term first (the
-            // vote above is not part of the measurement).
             follower.step(Event::Tick { now: 500 });
+            let measured = message.clone();
             let count = allocations_around(|| {
                 black_box(follower.step(Event::Message {
                     from: NodeId(1),
-                    msg: message.clone(),
+                    msg: measured,
                 }));
             });
             assert!(

@@ -8,15 +8,15 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use simraft_sim::{Harness, SimConfig};
+use simraft_sim::{FaultConfig, Harness, SimConfig};
 
 /// Deterministic simulation runs for simraft-kv.
 #[derive(Debug, Parser)]
 #[command(name = "simraft-sim", version, about)]
 struct Args {
-    /// The first seed to run (also read from `SIM_SEED` when set).
-    #[arg(long, default_value_t = 0)]
-    seed: u64,
+    /// The first seed to run (defaults to `SIM_SEED` when set, else `0`).
+    #[arg(long)]
+    seed: Option<u64>,
     /// How many consecutive seeds to run.
     #[arg(long, default_value_t = 1)]
     seeds: u64,
@@ -26,6 +26,11 @@ struct Args {
     /// Print each run's full trace after its summary line.
     #[arg(long)]
     trace: bool,
+    /// Enable the seeded multi-fault chaos profile (intermittent
+    /// asymmetric partitions, crashes, clock jumps, and frame
+    /// bit-flip corruption).
+    #[arg(long)]
+    chaos: bool,
     /// The cluster size for every run.
     #[arg(long, default_value_t = 3)]
     nodes: usize,
@@ -37,18 +42,28 @@ struct Args {
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    let base_seed = std::env::var("SIM_SEED")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-        .unwrap_or(args.seed);
+    let base_seed = args.seed.unwrap_or_else(|| {
+        std::env::var("SIM_SEED")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+    });
     let mut all_passed = true;
     for offset in 0..args.seeds {
         let seed = base_seed.wrapping_add(offset);
+        let chaos_ticks = args.ticks / 2;
+        let heal_ticks = args.ticks - chaos_ticks;
+        let faults = if args.chaos {
+            FaultConfig::chaos(seed, args.nodes, chaos_ticks)
+        } else {
+            FaultConfig::default()
+        };
         let config = SimConfig {
             seed,
             node_count: args.nodes,
-            chaos_ticks: args.ticks / 2,
-            heal_ticks: args.ticks - args.ticks / 2,
+            chaos_ticks,
+            heal_ticks,
+            faults,
             ..SimConfig::default()
         };
         let mut harness = Harness::new(config);
@@ -60,10 +75,11 @@ fn main() -> ExitCode {
                 simraft_sim::Verdict::Unknown => "unknown",
             };
             println!(
-                "{{\"seed\":{},\"completed\":{},\"converged\":{},\"ticks\":{},\"verdict\":\"{}\",\"digest\":\"{}\",\"passed\":{}}}",
+                "{{\"seed\":{},\"completed\":{},\"converged\":{},\"leader_converged\":{},\"ticks\":{},\"verdict\":\"{}\",\"digest\":\"{}\",\"passed\":{}}}",
                 report.seed,
                 report.completed,
                 report.converged,
+                report.leader_converged,
                 report.ticks_run,
                 verdict,
                 report.state_digest,
@@ -71,10 +87,11 @@ fn main() -> ExitCode {
             );
         } else {
             println!(
-                "seed={} completed={} converged={} ticks={} verdict={:?} digest={} passed={}",
+                "seed={} completed={} converged={} leader_converged={} ticks={} verdict={:?} digest={} passed={}",
                 report.seed,
                 report.completed,
                 report.converged,
+                report.leader_converged,
                 report.ticks_run,
                 report.verdict,
                 report.state_digest,
