@@ -159,11 +159,10 @@ fn report_measured_counts() {
         .expect("the leader sends AppendEntries");
     let mut follower = node(2);
     follower.step(Event::Tick { now: 500 });
-    let measured = message.clone();
     let append_count = allocations_around(|| {
         follower.step(Event::Message {
             from: NodeId(1),
-            msg: measured,
+            msg: message,
         });
     });
     println!(
