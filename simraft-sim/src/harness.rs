@@ -258,6 +258,7 @@ struct Driver<'a> {
     open_writes: BTreeMap<(ClientId, u64), OpenOp>,
     open_reads: BTreeMap<u64, OpenOp>,
     outcomes: BTreeMap<(ClientId, u64), OpResult>,
+    awaiting_outcome: BTreeMap<(ClientId, u64), OpenOp>,
     next_request: u64,
     scripted: Vec<(u64, ScriptedOp)>,
     max_latency: u64,
@@ -321,6 +322,7 @@ impl<'a> Driver<'a> {
             open_writes: BTreeMap::new(),
             open_reads: BTreeMap::new(),
             outcomes: BTreeMap::new(),
+            awaiting_outcome: BTreeMap::new(),
             next_request: 1,
             scripted,
             max_latency: 0,
@@ -858,14 +860,37 @@ impl<'a> Driver<'a> {
             sim.applied.push((index, entry.clone()));
             sim.machine.apply(index, entry)
         };
-        if let Ok(ApplyOutcome::Applied { result } | ApplyOutcome::Cached { result }) = outcome {
-            if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
-                let mapped = match result {
-                    CommandResult::Ack => OpResult::Ack,
-                    CommandResult::Value(v) => OpResult::Value(Some(v)),
-                    CommandResult::Error { message, .. } => OpResult::Error(message),
-                };
-                self.outcomes.insert((*client_id, *seq), mapped);
+        let mut recorded = None;
+        match outcome {
+            Ok(ApplyOutcome::Applied { result } | ApplyOutcome::Cached { result }) => {
+                if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
+                    let mapped = match result {
+                        CommandResult::Ack => OpResult::Ack,
+                        CommandResult::Value(v) => OpResult::Value(Some(v)),
+                        CommandResult::Error { message, .. } => OpResult::Error(message),
+                    };
+                    recorded = Some(((*client_id, *seq), mapped));
+                }
+            }
+            Ok(ApplyOutcome::Failed { error }) => {
+                if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
+                    recorded =
+                        Some(((*client_id, *seq), OpResult::Error(error.to_string())));
+                }
+            }
+            _ => {}
+        }
+        if let Some((key, mapped)) = recorded {
+            // A commit response that arrived before any node
+            // recorded the outcome parked its completion; this
+            // outcome resolves it with the machine's real
+            // verdict. Otherwise the outcome waits in the map
+            // for the commit response.
+            if let Some(open) = self.awaiting_outcome.remove(&key) {
+                self.history.complete(open.record, self.now, mapped);
+                self.max_latency = self.max_latency.max(self.now - open.started);
+            } else {
+                self.outcomes.insert(key, mapped);
             }
         }
         // Reads deferred until this machine reached their index
@@ -941,13 +966,34 @@ impl<'a> Driver<'a> {
         match result {
             simraft_core::ClientResult::Committed => {
                 if let Some(open) = self.open_writes.remove(&(client_id, seq)) {
-                    let outcome = self
-                        .outcomes
-                        .remove(&(client_id, seq))
-                        .unwrap_or(OpResult::Ack);
-                    self.history.complete(open.record, self.now, outcome);
-                    self.max_latency = self.max_latency.max(self.now - open.started);
+                    // The client is done either way: the core
+                    // has committed its entry. The history
+                    // record, though, may only complete with
+                    // the state machine's real outcome.
                     self.client_free(open.client);
+                    match self.outcomes.remove(&(client_id, seq)) {
+                        Some(outcome) => {
+                            self.history.complete(open.record, self.now, outcome);
+                            self.max_latency =
+                                self.max_latency.max(self.now - open.started);
+                        }
+                        None => {
+                            // No node has recorded the outcome
+                            // yet: the leader's own apply can
+                            // lag its commit response (a machine
+                            // replaying after a restart gaps the
+                            // apply while the followers' applies
+                            // land a tick later). Park the
+                            // record until an apply records the
+                            // verdict. Defaulting to Ack here
+                            // fabricated a success the machine
+                            // never returned: seed 15623
+                            // recorded a session-gap rejection
+                            // as an Ack, and the history stopped
+                            // being linearizable (R-05).
+                            self.awaiting_outcome.insert((client_id, seq), open);
+                        }
+                    }
                 }
             }
             simraft_core::ClientResult::NotLeader { leader } => {
