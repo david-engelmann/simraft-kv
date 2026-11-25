@@ -874,8 +874,7 @@ impl<'a> Driver<'a> {
             }
             Ok(ApplyOutcome::Failed { error }) => {
                 if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
-                    recorded =
-                        Some(((*client_id, *seq), OpResult::Error(error.to_string())));
+                    recorded = Some(((*client_id, *seq), OpResult::Error(error.to_string())));
                 }
             }
             _ => {}
@@ -974,8 +973,7 @@ impl<'a> Driver<'a> {
                     match self.outcomes.remove(&(client_id, seq)) {
                         Some(outcome) => {
                             self.history.complete(open.record, self.now, outcome);
-                            self.max_latency =
-                                self.max_latency.max(self.now - open.started);
+                            self.max_latency = self.max_latency.max(self.now - open.started);
                         }
                         None => {
                             // No node has recorded the outcome
