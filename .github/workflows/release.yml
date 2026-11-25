@@ -96,7 +96,7 @@ jobs:
             Compress-Archive -Path "$stage/*" -DestinationPath "dist/$bin-$tag-${{ matrix.target }}.zip" -Force
           }
       - name: Upload target archives
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: archives-${{ matrix.target }}
           path: dist/*
