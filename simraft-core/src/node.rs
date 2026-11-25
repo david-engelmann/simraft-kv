@@ -1295,20 +1295,32 @@ impl Node {
             let Some(entry) = self.log.entry_at(index).cloned() else {
                 break;
             };
+            // The bookkeeping below borrows the entry's
+            // kind, so extract what it needs first; the
+            // owned entry then moves into the Apply action
+            // instead of being cloned a second time (R-5).
+            // The emission order is unchanged: Apply first,
+            // then the config and client-response effects.
+            let applied_config = match &entry.kind {
+                EntryKind::Config { config } => Some(config.clone()),
+                _ => None,
+            };
+            let applied_command = match &entry.kind {
+                EntryKind::Command {
+                    client_id, seq, ..
+                } => Some((*client_id, *seq)),
+                _ => None,
+            };
             self.defer_or_emit(
                 out,
-                Action::Apply {
-                    index,
-                    entry: entry.clone(),
-                },
+                Action::Apply { index, entry },
                 0,
                 index,
             );
-            if let EntryKind::Config { config } = &entry.kind {
-                let config = config.clone();
+            if let Some(config) = applied_config {
                 self.on_config_applied(index, &config, out);
             }
-            if let EntryKind::Command { client_id, seq, .. } = entry.kind {
+            if let Some((client_id, seq)) = applied_command {
                 self.defer_or_emit(
                     out,
                     Action::ClientResponse {
