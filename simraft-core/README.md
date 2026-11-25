@@ -27,10 +27,8 @@ root with `cargo run -p simraft-core --example embed`.
 
 ## Documentation
 
-The full protocol design, byte schemas, and invariant traceability
-matrix live in the repository under `docs/ARCHITECTURE.md` and
-`docs/INVARIANTS.md`. This crate is part of the `simraft-kv`
-workspace alongside `simraft-wire`, `simraft-kv`, `simraft-node`,
-and `simraft-sim`.
+- [Architecture specification](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md)
+- [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md)
+- [API reference on docs.rs](https://docs.rs/simraft-core)
 
-Licensed under either of MIT or Apache-2.0 at your option.
+Licensed under either of [MIT](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-APACHE) at your option.

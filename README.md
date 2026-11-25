@@ -1,82 +1,129 @@
-# simraft-kv
+<p align="center">
+  <a href="https://github.com/david-engelmann/simraft-kv">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="docs/media/simraft-lockup-dark.svg">
+      <img src="docs/media/simraft-lockup-light.svg" alt="simraft-kv" height="56">
+    </picture>
+  </a>
+</p>
 
-`simraft-kv` is a deterministic Raft consensus implementation and
-replicated key-value store in Rust. A cluster of nodes agrees on one
-ordered history of commands even when individual servers crash, disk
-tails tear, or network links drop, reorder, or partition packets.
+<h3 align="center">Sans-I/O Raft consensus engine, deterministic chaos simulator, and linearizable key-value store in Rust.</h3>
 
-The consensus engine makes protocol decisions as a pure function of
-input events and performs zero input or output on its own. That
-split lets a deterministic simulator drive an entire cluster on a
-virtual clock from a single 64-bit seed while a production TCP and
-file adapter runs the exact same core and wire format across real
-processes. Every promised safety, durability, liveness, determinism,
-and latency property maps to an executable test, oracle, or
-benchmark in `docs/INVARIANTS.md`.
+<p align="center">
+  <code>simraft-kv</code> separates consensus logic from all network, disk, and clock I/O. One pure state machine (<code>Node::step</code>) and one checksummed wire codec (<code>"SRKV"</code>) power both a single-seed deterministic chaos simulator and a multi-process TCP and file-backed key-value server.
+</p>
 
-## Workspace crates
+<p align="center">
+  <a href="docs/README.md"><b>Docs</b></a> ·
+  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="docs/INVARIANTS.md">Invariants</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="https://github.com/david-engelmann/simraft-kv/releases">Releases</a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/david-engelmann/simraft-kv/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/david-engelmann/simraft-kv/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI on main"></a>
+  <a href="https://crates.io/crates/simraft-core"><img src="https://img.shields.io/crates/v/simraft-core?color=0f766e&label=crates.io" alt="crates.io version"></a>
+  <a href="https://docs.rs/simraft-core"><img src="https://img.shields.io/docsrs/simraft-core" alt="docs.rs"></a>
+  <a href="Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.88-informational" alt="MSRV 1.88"></a>
+  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache-2.0 license"></a>
+</p>
+
+<p align="center">
+  <img src="docs/media/money-shot.gif"
+       alt="A two-part view with live five-node cluster topology and safety oracle status above and real simraft-sim and simraft-node terminal runs below, sweeping 25 chaos seeds, replaying seed 912 deterministically, running the sans-I/O embed example, and executing linearizable TCP writes and reads"
+       width="900">
+</p>
+
+<p align="center"><sub>Every terminal line above comes from real runs of <code>simraft-sim</code>, the <code>embed</code> example, and <code>simraft-node</code>.</sub></p>
+
+## Why simraft-kv
+
+Distributed consensus bugs hide in rare interleavings of asymmetric partitions, crash recoveries with unpersisted tails, stale durability acknowledgments after log truncation, and corrupted wire frames. Testing Raft only over live sockets makes those interleavings slow to trigger and nearly impossible to replay. `simraft-kv` makes every transition a pure function of explicit events so thousands of hostile cluster histories can be explored and replayed byte for byte from a single 64-bit integer.
+
+- **Pure sans-I/O consensus core.** `simraft-core` has zero external dependencies, reads no ambient clock or randomness, and emits explicit `Action` values (`Send`, `PersistHardState`, `PersistEntries`, `Apply`, `ReadReady`, `ClientResponse`, `PersistSnapshot`, `LoadSnapshot`) in deterministic order.
+- **Complete operational Raft protocol.** Implements Pre-Vote elections with leader recency denial (`T-03..T-05`), Figure 8 commitment (`S-06`), term-boundary conflict fast backup (`S-08`), clock-free `ReadIndex` quorum reads (`R-01..R-04`), chunked `InstallSnapshot` transfer (`N-01..N-08`), and single-server voter and learner membership changes (`M-01..M-05`).
+- **Durability-gated transitions.** Votes, append acknowledgments, snapshot responses, single-voter commits, and `ReadIndex` releases wait until required `HardState` and log watermarks reach durable storage, clamping watermarks and fencing stale acks across log truncations (`T-02`, `R-06`).
+- **Per-event safety oracles and Wing and Gong linearizability.** `simraft-sim` checks Election Safety, Leader Append-Only, Log Matching, Leader Completeness, and State Machine Safety after every simulator event, verifies completed client histories with a per-key Wing and Gong linearizability checker, and enforces post-heal leader and state digest convergence (`H-02`).
+- **Shared wire codec across simulator and TCP.** `simraft-wire` frames every peer and client message with `"SRKV"` magic, 16 MiB defensive bounds, trailing-byte rejection, and IEEE CRC-32 checksums, exercised identically under simulated bit-flips and live sockets.
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/determinism-proof-dark.svg">
+    <img src="docs/media/determinism-proof-light.svg"
+         alt="Four measured and verified simraft-kv metrics showing 1.50 microsecond three-node commit rounds, 0 Tick and 4 single-entry AppendEntries allocations, 100,000 weekly chaos seeds, and S-01 through S-05 safety plus Wing and Gong linearizability checks"
+         width="860">
+  </picture>
+</p>
+
+## How it works
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/media/how-it-works-dark.svg">
+    <img src="docs/media/how-it-works-light.svg"
+         alt="Tick, SRKV peer frames, persist watermarks, and client requests enter the pure sans-I/O simraft-core and simraft-kv state machines over the shared simraft-wire codec, driving both the deterministic simraft-sim chaos harness and the durable TCP simraft-node server"
+         width="860">
+  </picture>
+</p>
 
 | Crate | Kind | External runtime deps | Role |
 | --- | --- | --- | --- |
-| `simraft-core` | library | none (`std` only) | Pure sans-I/O Raft state machine (`Node::step`), Pre-Vote elections, fast log backup, Figure 8 commitment, `ReadIndex`, chunked snapshots, and single-server membership changes. |
-| `simraft-wire` | library | `crc32fast` | Canonical `"SRKV"` message frame, log entry, and cluster config codec with 16 MiB frame bounds and IEEE CRC-32 checksums. |
-| `simraft-kv` | library | none (`std` only) | Deterministic `BTreeMap` key-value state machine, bounded client session deduplication, and SHA-256 verified snapshot payloads. |
-| `simraft-node` | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, and linearizable `client` CLI (`put`, `get`, `delete`). |
-| `simraft-sim` | library and binary | `clap`, `crc32fast`, `sha2` | Single-threaded deterministic simulator, seeded `--chaos` fault injector, per-event safety oracles, and Wing and Gong linearizability checker. |
+| [`simraft-core`](simraft-core/README.md) | library | none (`std` only) | Pure sans-I/O Raft state machine (`Node::step`), Pre-Vote elections, fast log backup, Figure 8 commitment, `ReadIndex`, chunked snapshots, and single-server membership changes. |
+| [`simraft-wire`](simraft-wire/README.md) | library | `crc32fast` | Canonical `"SRKV"` message frame, log entry, and cluster config codec with 16 MiB frame bounds and IEEE CRC-32 checksums. |
+| [`simraft-kv`](simraft-kv/README.md) | library | none (`std` only) | Deterministic `BTreeMap` key-value state machine, bounded client session deduplication, and SHA-256 verified snapshot payloads. |
+| [`simraft-node`](simraft-node/README.md) | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, and linearizable `client` CLI (`put`, `get`, `delete`). |
+| [`simraft-sim`](simraft-sim/README.md) | library and binary | `clap`, `crc32fast`, `sha2` | Single-threaded deterministic simulator, seeded `--chaos` fault injector, per-event safety oracles, and Wing and Gong linearizability checker. |
 
-## Quickstart with a three-node localhost cluster
+## Quickstart
 
-Start three `simraft-node` servers in separate terminals from the
-workspace root.
-
-```sh
-cargo run -p simraft-node --release -- serve \
-  --id 1 --data-dir /tmp/srkv-1 \
-  --member 1@127.0.0.1:7001 \
-  --member 2@127.0.0.1:7002 \
-  --member 3@127.0.0.1:7003
-
-cargo run -p simraft-node --release -- serve \
-  --id 2 --data-dir /tmp/srkv-2 \
-  --member 1@127.0.0.1:7001 \
-  --member 2@127.0.0.1:7002 \
-  --member 3@127.0.0.1:7003
-
-cargo run -p simraft-node --release -- serve \
-  --id 3 --data-dir /tmp/srkv-3 \
-  --member 1@127.0.0.1:7001 \
-  --member 2@127.0.0.1:7002 \
-  --member 3@127.0.0.1:7003
-```
-
-Write, read, and delete keys against any member. The client follows
-leader hints automatically.
+Install the server and simulator binaries from crates.io (or via `cargo-binstall` and GitHub Releases), or run directly from the workspace.
 
 ```sh
-cargo run -p simraft-node --release -- client \
-  --server 127.0.0.1:7001 \
-  put greeting hello
-
-cargo run -p simraft-node --release -- client \
-  --server 127.0.0.1:7002 \
-  get greeting
-
-cargo run -p simraft-node --release -- client \
-  --server 127.0.0.1:7003 \
-  delete greeting
+cargo install simraft-node simraft-sim
 ```
 
-`put` and `delete` print `ok` to standard output and exit with code
-`0`. `get` writes the raw value bytes to standard output and exits
-with code `0` when the key exists, or writes
-`simraft-node: key not found` to standard error and exits with code
-`1` when the key is absent. Transport, timeout, or cluster errors
-exit with code `2`.
+### Run a deterministic chaos sweep and replay a single seed
 
-## Embedding the sans-I/O core
+Sweep 25 seeds across asymmetric partitions, crashes, clock jumps, and wire bit-flip corruption, then replay seed `912` deterministically.
 
-Callers that embed `simraft-core` directly own the network, disk,
-and clock while `Node::step` owns every consensus transition.
+```sh
+simraft-sim --seed 0 --seeds 25 --chaos
+simraft-sim --seed 912 --seeds 1 --chaos --json
+```
+
+```json
+{"seed":912,"completed":true,"converged":true,"leader_converged":true,"ticks":9292,"verdict":"linearizable","digest":"c8a282578b8f0c97569595cff000063cfa6dfd8f23fc41c6be10f4994bde7095","passed":true}
+```
+
+### Run a three-node localhost TCP cluster
+
+Start three `simraft-node` servers in separate terminals.
+
+```sh
+simraft-node serve --id 1 --data-dir /tmp/srkv-1 \
+  --member 1@127.0.0.1:7001 --member 2@127.0.0.1:7002 --member 3@127.0.0.1:7003
+
+simraft-node serve --id 2 --data-dir /tmp/srkv-2 \
+  --member 1@127.0.0.1:7001 --member 2@127.0.0.1:7002 --member 3@127.0.0.1:7003
+
+simraft-node serve --id 3 --data-dir /tmp/srkv-3 \
+  --member 1@127.0.0.1:7001 --member 2@127.0.0.1:7002 --member 3@127.0.0.1:7003
+```
+
+Write, read, and delete keys against any member. The client follows leader hints automatically and reads linearizably through `ReadIndex`.
+
+```sh
+simraft-node client --server 127.0.0.1:7001 put greeting hello
+simraft-node client --server 127.0.0.1:7002 get greeting
+simraft-node client --server 127.0.0.1:7003 delete greeting
+```
+
+`put` and `delete` print `ok` and exit `0`. `get` writes raw value bytes to standard output and exits `0` when present, exits `1` with `simraft-node: key not found` on standard error when absent, and exits `2` on transport, timeout, or cluster errors.
+
+### Embed the sans-I/O core in Rust
+
+Callers embedding `simraft-core` own sockets, storage, and timers while `Node::step` computes every state transition.
 
 ```rust
 let actions = node.step(event);
@@ -86,28 +133,26 @@ for action in actions {
 }
 ```
 
-Run the self-contained single-file three-node embedding example with
-an in-memory transport.
+Run the self-contained single-file three-node embedding example.
 
 ```sh
-cargo run -p simraft-core --example embed
+cargo run -p simraft-core --example embed --locked
 ```
 
-## Deterministic simulation and verification
+## Benchmarks and verification
 
-Two binaries ship in the workspace (`simraft-node` for live clusters
-and `simraft-sim` for deterministic fault simulation). Run a seeded
-chaos sweep across asymmetric partitions, crashes, clock jumps, and
-wire bit-flip corruption, then replay any single seed byte for byte.
+Measured with the Criterion benchmarks in this repository on hosted runners (`2026-11-19` baseline plus `v0.1.0` allocation gate).
 
-```sh
-cargo run -p simraft-sim --release -- --seed 0 --seeds 25 --chaos
-cargo run -p simraft-sim --release -- --seed 912 --seeds 1 --chaos --trace
-```
+| Benchmark / Gate | Workload | Median / Bound | Throughput / Budget |
+| --- | --- | --- | --- |
+| `propose_commit_single` | Full propose and commit round on a 3-node cluster (32-byte entry) | `1.50 us` | `~668,000 rounds/s` |
+| `propose_commit_batch_32` | Coalesced batch of 32 proposals released on one persist ack (`B-02`) | `85.5 us` | `~374,000 entries/s` |
+| `follower_append_entries` | Follower stepping one `AppendEntries` RPC | `76 ns` | `~13.1M steps/s` |
+| `follower_catchup_10k` | Empty follower catching up to a 10,000-entry leader log | `4.06 ms` | `~2.46M entries/s` |
+| `step_allocations` (`L-03`) | Thread-local heap allocations inside `Node::step` | `0` (`Tick`), `2` (`RequestVote`), `4` (`AppendEntries`) | Budgets `4`, `4`, `7` |
+| `checker_scale` (`L-04`) | Wing and Gong per-key linearizability decision over 100,000 ops across 64 keys | `100,000 states` | Memoized exact verdict |
 
-Run the full workspace verification gate on Rust `1.88` or newer
-(CI pins Rust `1.100.0` in `rust-toolchain.toml` and checks MSRV
-`1.88.0`).
+Run the full verification suite locally on Rust `1.88` or newer (CI pins `1.100.0` and checks MSRV `1.88.0` across Linux, macOS, and Windows, plus 1,000 chaos seeds on PRs, 10,000 on `main`, and 100,000 weekly).
 
 ```sh
 cargo fmt --all -- --check
@@ -117,42 +162,20 @@ RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
 cargo bench --workspace --locked -- --test
 ```
 
-Property test suites scale through `PROPTEST_CASES` (1,000 cases per
-pull request and 10,000 on `main`), and chaos simulator sweeps run
-at matching seed counts in CI plus 100,000 seeds every week.
-
-## Benchmarks
-
-Measured with the Criterion benchmarks in this repository from
-recorded hosted runs on 2026-11-19. A full propose and commit round
-on a three-node cluster driven directly, one 32-byte entry per
-round, takes a median of 1.50 microseconds, about 668,000 rounds
-per second. A batch of 32 proposals released by one persist
-acknowledgment takes a median of 85.5 microseconds, about 374,000
-entries per second, down from 122 microseconds before leader send
-coalescing (`B-02`). A follower processing one `AppendEntries`
-message takes a median of 76 nanoseconds, and `step_allocations`
-verifies `Node::step` stays within 0 allocations on `Tick`, 2 on
-`RequestVote`, and 6 on a single-entry `AppendEntries` (`APPEND_BUDGET = 7`).
-A follower with an empty log catches up to a 10,000-entry leader log
-in a median of 4.06 milliseconds. The linearizability checker
-decides a generated history of 100,000 operations over 64 keys after
-visiting 100,000 states. Reproduce locally with
-`cargo bench --workspace`.
-
 ## Documentation
 
-- `docs/ARCHITECTURE.md` specifies the protocol rules, byte schemas,
-  domain-separated digests, simulator model, and rejected
-  alternatives.
-- `docs/INVARIANTS.md` maps every formal invariant to its enforcing
-  property test, simulator oracle, scenario test, or benchmark.
-- `DECISIONS.md` records the workspace architectural decisions.
-- `docs/ROADMAP.md` records the completed milestone and post-M4
-  delivery lanes plus parked future extensions.
-- `SECURITY.md` documents the threat model, defensive bounds, and
-  vulnerability reporting policy.
+| If you want to... | Read |
+| --- | --- |
+| Browse every document in the workspace | [Documentation index](docs/README.md) |
+| Read the protocol state rules, `"SRKV"` byte tables, and digest domains | [Architecture](docs/ARCHITECTURE.md) · [Decisions](DECISIONS.md) |
+| Audit every safety, durability, liveness, and determinism invariant | [Invariants and traceability matrix](docs/INVARIANTS.md) |
+| Explore individual workspace crates | [simraft-core](simraft-core/README.md) · [simraft-wire](simraft-wire/README.md) · [simraft-kv](simraft-kv/README.md) · [simraft-node](simraft-node/README.md) · [simraft-sim](simraft-sim/README.md) |
+| Check defensive bounds, threat model, and release history | [Security policy](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Changelog](CHANGELOG.md) |
+
+## Contributing
+
+[CONTRIBUTING.md](CONTRIBUTING.md) covers local verification commands, replaying failing chaos seeds, invariant traceability rules, and public copy standards.
 
 ## License
 
-Licensed under either of MIT or Apache-2.0 at your option.
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.

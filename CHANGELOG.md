@@ -45,3 +45,7 @@ Initial public release of all five workspace crates at version
   convergence checks (`H-02`), domain-separated state and log digests
   (`"simraft-kv/state-digest/v1"` and `"simraft-kv/log-digest/v1"`),
   and per-key Wing and Gong linearizability verification.
+- Public documentation index (`docs/README.md`), per-crate `README.md`
+  files, light and dark SVG lockups and architecture and baseline
+  diagrams, a `1200x630` social card, and a real-output
+  `docs/media/money-shot.gif` walkthrough.
