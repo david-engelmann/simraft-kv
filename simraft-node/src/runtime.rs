@@ -269,14 +269,22 @@ impl Driver {
 
     /// The snapshot payload for `meta`: the durable copy when
     /// it matches, otherwise rebuilt from the state machine
-    /// (the simulator's harness makes the same fallback).
+    /// (the simulator's harness makes the same fallback). The
+    /// rebuild is fenced to the boundary the machine is
+    /// standing on (invariant A-06): `snapshot_parts` dumps the
+    /// machine's current state, so serving a rebuild for an
+    /// earlier boundary would label later store and session
+    /// state with that earlier index, and a follower installing
+    /// it would diverge when the intervening entries replay.
     fn snapshot_bytes(&self, meta: &SnapshotMeta) -> Option<Vec<u8>> {
         if let Ok(Some((stored, data))) = self.store.read_snapshot()
             && stored == *meta
         {
             return Some(data);
         }
-        if self.node.log().term_at(meta.last_included_index).is_some() {
+        if self.node.last_applied() == meta.last_included_index
+            && self.node.log().term_at(meta.last_included_index).is_some()
+        {
             let parts = self.machine.snapshot_parts(
                 meta.last_included_index,
                 meta.last_included_term,
