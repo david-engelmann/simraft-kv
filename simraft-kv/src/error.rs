@@ -1,8 +1,9 @@
 //! Domain error types for simraft-kv.
 //!
 //! Every error names the offending values: byte offsets and expected
-//! versus actual fields for decoding, the client and the exact expected
-//! and received sequence numbers for session ordering (invariant E-01).
+//! versus actual fields for decoding, payload lengths and bounds for
+//! size caps, and the client and exact expected and received sequence
+//! numbers for session ordering (invariant E-01).
 
 use core::fmt;
 use simraft_core::{ClientId, LogIndex};
@@ -10,6 +11,20 @@ use simraft_core::{ClientId, LogIndex};
 /// An error from the KV payload codec or the state machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KvError {
+    /// A payload or encoded field exceeded `MAX_PAYLOAD_BYTES` (16 MiB).
+    PayloadTooLarge {
+        /// The offending payload or field length in bytes.
+        length: usize,
+        /// The maximum permitted payload length in bytes.
+        limit: usize,
+    },
+    /// Extra undecoded bytes remained after a complete payload.
+    TrailingBytes {
+        /// The byte offset at which trailing data began.
+        offset: usize,
+        /// How many undecoded bytes remained.
+        extra: usize,
+    },
     /// A payload ended before the field at `offset` was complete.
     Truncated {
         /// The byte offset at which decoding ran out of input.
@@ -63,11 +78,25 @@ pub enum KvError {
     },
     /// A snapshot payload carried a configuration with no voters.
     SnapshotEmptyVoters,
+    /// A snapshot payload carried an invalid cluster configuration
+    /// (such as overlapping voter and learner sets).
+    SnapshotInvalidConfig {
+        /// The underlying configuration error text.
+        detail: String,
+    },
 }
 
 impl fmt::Display for KvError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::PayloadTooLarge { length, limit } => write!(
+                f,
+                "payload length {length} bytes exceeds limit of {limit} bytes"
+            ),
+            Self::TrailingBytes { offset, extra } => write!(
+                f,
+                "payload has {extra} trailing undecoded bytes starting at byte {offset}"
+            ),
             Self::Truncated {
                 offset,
                 field,
@@ -75,7 +104,8 @@ impl fmt::Display for KvError {
                 available,
             } => write!(
                 f,
-                "payload truncated at byte {offset}: field {field} needs {needed} bytes,                  {available} remain"
+                "payload truncated at byte {offset}: field {field} needs {needed} bytes, \
+                 {available} remain"
             ),
             Self::UnknownTag {
                 offset,
@@ -83,7 +113,8 @@ impl fmt::Display for KvError {
                 context,
             } => write!(
                 f,
-                "unknown {context} tag {tag} at byte {offset}; this schema version assigns                  only the documented values"
+                "unknown {context} tag {tag} at byte {offset}; this schema version assigns \
+                 only the documented values"
             ),
             Self::SessionGap {
                 client_id,
@@ -91,7 +122,8 @@ impl fmt::Display for KvError {
                 received,
             } => write!(
                 f,
-                "session gap for {client_id}: expected seq {expected}, received seq {received};                  the command was not executed"
+                "session gap for {client_id}: expected seq {expected}, received seq {received}; \
+                 the command was not executed"
             ),
             Self::ApplyGap { expected, received } => write!(
                 f,
@@ -110,6 +142,9 @@ impl fmt::Display for KvError {
             }
             Self::SnapshotEmptyVoters => {
                 write!(f, "snapshot configuration has no voters")
+            }
+            Self::SnapshotInvalidConfig { detail } => {
+                write!(f, "snapshot configuration is invalid: {detail}")
             }
         }
     }

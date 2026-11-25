@@ -22,12 +22,12 @@ pub struct Config {
     pub max_entries_per_append: usize,
     /// The approximate byte budget for one `AppendEntries` message.
     pub max_append_bytes: usize,
-    /// The chunk size for `InstallSnapshot` transfers (used from M3).
+    /// The chunk size for `InstallSnapshot` transfers.
     pub snapshot_chunk_bytes: usize,
-    /// The most client sessions the KV state machine retains (used from M2).
+    /// The most client sessions the KV state machine retains.
     pub max_sessions: usize,
-    /// The longest uncommitted log tail the in-flight dedup scan covers
-    /// (used from M2).
+    /// The maximum number of uncommitted entries a leader accepts
+    /// before rejecting new client proposals.
     pub max_uncommitted_entries: usize,
 }
 

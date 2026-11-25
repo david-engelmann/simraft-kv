@@ -6,8 +6,8 @@
 //! core in simraft-core is deliberately KV-agnostic and treats command
 //! payloads as opaque bytes; this crate gives them meaning.
 //!
-//! This crate is strictly std-only (DECISIONS Q5) and forbids unsafe
-//! code.
+//! This crate depends only on `std` and `simraft-core`, and forbids
+//! unsafe code.
 
 #![forbid(unsafe_code)]
 #![warn(missing_docs)]
@@ -22,7 +22,8 @@ pub mod snapshot;
 pub const SCHEMA_VERSION: u16 = 1;
 
 pub use command::{
-    CommandResult, KvOp, decode_command, decode_result, encode_command, encode_result,
+    CommandResult, KvOp, MAX_PAYLOAD_BYTES, decode_command, decode_result, encode_command,
+    encode_result,
 };
 pub use error::KvError;
 pub use machine::{ApplyOutcome, KvStateMachine};

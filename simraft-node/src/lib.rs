@@ -27,6 +27,8 @@ pub mod client;
 pub mod runtime;
 pub mod store;
 
+pub use client::Client;
+
 use std::collections::BTreeSet;
 use std::fmt;
 use std::net::SocketAddr;

@@ -36,5 +36,5 @@ pub use history::{History, Op, OpRecord, OpResult};
 pub use liz::{Checker, Verdict};
 pub use oracle::{NodeView, OracleState, OracleViolation};
 pub use rng::Rng;
-pub use trace::{Trace, digest_hex};
+pub use trace::{LOG_DIGEST_DOMAIN, STATE_DIGEST_DOMAIN, Trace, digest_hex, domain_digest_hex};
 pub use wire::{WireError, decode_frame, encode_frame};

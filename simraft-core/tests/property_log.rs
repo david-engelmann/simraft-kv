@@ -8,6 +8,7 @@
 mod common;
 
 use common::Harness;
+use proptest::prelude::*;
 use simraft_core::{
     Action, ClientId, EntryKind, Event, HardState, LogEntry, LogIndex, Message, Node, NodeId, Role,
     Term,
@@ -191,4 +192,78 @@ fn conflict_hint_lands_on_term_boundary() {
     assert_eq!(conflict_index, LogIndex(5), "last index + 1 when too short");
     assert_eq!(conflict_term, Term(0));
     assert_eq!(follower.role(), Role::Follower);
+}
+
+proptest! {
+    #[test]
+    fn conflict_hint_always_identifies_exact_term_boundary(
+        mut raw_terms in prop::collection::vec(1_u64..=6, 1..=16),
+        probe_idx in 1_u64..=20,
+        probe_term in 1_u64..=7,
+    ) {
+        raw_terms.sort_unstable();
+        let mut follower = Node::new(
+            NodeId(2),
+            simraft_core::Config::default(),
+            common::all_voters(&[1, 2, 3]),
+            11,
+        )
+        .unwrap();
+        let _ = follower.step(Event::Restored {
+            hard_state: HardState {
+                current_term: Term(7),
+                voted_for: None,
+            },
+            entries: entries_with_terms(&raw_terms),
+            snapshot: None,
+        });
+        let actions = follower.step(Event::Message {
+            from: NodeId(1),
+            msg: Message::AppendEntries {
+                term: Term(7),
+                prev_log_index: LogIndex(probe_idx),
+                prev_log_term: Term(probe_term),
+                entries: Vec::new(),
+                leader_commit: LogIndex::ZERO,
+                read_round: 0,
+            },
+        });
+        let len = raw_terms.len() as u64;
+        let probe_pos = usize::try_from(probe_idx - 1).expect("probe index fits in usize");
+        if probe_idx <= len && raw_terms[probe_pos] == probe_term {
+            let ok = actions.iter().any(|a| matches!(
+                a,
+                Action::Send {
+                    msg: Message::AppendEntriesResponse { success: true, .. },
+                    ..
+                }
+            ));
+            prop_assert!(ok);
+        } else {
+            let (c_idx, c_term) = actions
+                .iter()
+                .find_map(|a| match a {
+                    Action::Send {
+                        msg: Message::AppendEntriesResponse {
+                            success: false,
+                            conflict_index,
+                            conflict_term,
+                            ..
+                        },
+                        ..
+                    } => Some((*conflict_index, *conflict_term)),
+                    _ => None,
+                })
+                .expect("must reject mismatched prev_log");
+            if probe_idx > len {
+                prop_assert_eq!(c_idx, LogIndex(len + 1));
+                prop_assert_eq!(c_term, Term::ZERO);
+            } else {
+                let actual_term = raw_terms[probe_pos];
+                let first_pos = raw_terms.iter().position(|&t| t == actual_term).unwrap();
+                prop_assert_eq!(c_term, Term(actual_term));
+                prop_assert_eq!(c_idx, LogIndex(first_pos as u64 + 1));
+            }
+        }
+    }
 }

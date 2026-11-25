@@ -1,11 +1,16 @@
-//! The simraft-node binary: `serve` runs one node, `client`
-//! issues one operation against a member.
+//! The `simraft-node` binary: `serve` runs one Raft cluster node in
+//! the foreground, and `client` issues one linearizable key-value
+//! operation against a cluster member.
 //!
-//! Stage A state: both modes parse and validate their arguments
-//! through the simraft-node library contract and then report
-//! that the runtime lands at Lane 1 Stage B, exiting with code
-//! 2. Stage B replaces the report with the serving loop and the
-//! client transport.
+//! Exit codes:
+//! - `0`: the node exited cleanly, a write (`put` or `delete`)
+//!   committed and printed `ok`, or `get` found the key and printed
+//!   its value.
+//! - `1`: `client get <key>` confirmed linearizably that `<key>` is
+//!   absent from the store (prints `simraft-node: key not found` to
+//!   stderr and nothing to stdout).
+//! - `2`: invalid arguments, storage failure, or transport/cluster
+//!   unavailability.
 
 #![forbid(unsafe_code)]
 
@@ -18,7 +23,11 @@ use simraft_core::NodeId;
 use simraft_node::{ClientOp, MemberConfig, NodeConfig, run_client, run_node};
 
 #[derive(Parser)]
-#[command(name = "simraft-node", about = "Run or query a simraft-kv node")]
+#[command(
+    name = "simraft-node",
+    version,
+    about = "Run or query a simraft-kv Raft cluster node"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -28,13 +37,13 @@ struct Cli {
 enum Command {
     /// Run one cluster node in the foreground.
     Serve(ServeArgs),
-    /// Issue one client operation against a member.
+    /// Issue one linearizable client operation against a member.
     Client(ClientArgs),
 }
 
 #[derive(Args)]
 struct ServeArgs {
-    /// This node's id.
+    /// This node's numeric id.
     #[arg(long)]
     id: u64,
     /// A cluster member as id@host:port, repeated for every
@@ -51,7 +60,7 @@ struct ServeArgs {
 
 #[derive(Args)]
 struct ClientArgs {
-    /// The member to talk to, as a socket address.
+    /// The member to talk to, as a socket address (follows leader redirects).
     #[arg(long)]
     server: SocketAddr,
     #[command(subcommand)]
@@ -60,19 +69,19 @@ struct ClientArgs {
 
 #[derive(Subcommand)]
 enum ClientCommand {
-    /// Store a value under a key.
+    /// Store a value under a key (prints `ok` and exits 0 on commit).
     Put {
         /// The key.
         key: String,
         /// The value.
         value: String,
     },
-    /// Fetch the value under a key.
+    /// Fetch the value under a key (prints the value and exits 0 if present, or exits 1 if absent).
     Get {
         /// The key.
         key: String,
     },
-    /// Remove a key.
+    /// Remove a key (prints `ok` and exits 0 on commit).
     Delete {
         /// The key.
         key: String,
@@ -81,16 +90,15 @@ enum ClientCommand {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let result = match cli.command {
-        Command::Serve(args) => serve(args),
+    match cli.command {
+        Command::Serve(args) => match serve(args) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("simraft-node: {error}");
+                ExitCode::from(2)
+            }
+        },
         Command::Client(args) => client(args),
-    };
-    match result {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("simraft-node: {error}");
-            ExitCode::from(2)
-        }
     }
 }
 
@@ -108,7 +116,8 @@ fn serve(args: ServeArgs) -> Result<(), simraft_node::NodeError> {
     run_node(&config)
 }
 
-fn client(args: ClientArgs) -> Result<(), simraft_node::NodeError> {
+fn client(args: ClientArgs) -> ExitCode {
+    let is_get = matches!(args.op, ClientCommand::Get { .. });
     let op = match args.op {
         ClientCommand::Put { key, value } => ClientOp::Put {
             key: key.into_bytes(),
@@ -121,9 +130,22 @@ fn client(args: ClientArgs) -> Result<(), simraft_node::NodeError> {
             key: key.into_bytes(),
         },
     };
-    match run_client(args.server, &op)? {
-        Some(value) => println!("{}", String::from_utf8_lossy(&value)),
-        None => println!("ok"),
+    match run_client(args.server, &op) {
+        Ok(Some(value)) => {
+            println!("{}", String::from_utf8_lossy(&value));
+            ExitCode::SUCCESS
+        }
+        Ok(None) if is_get => {
+            eprintln!("simraft-node: key not found");
+            ExitCode::from(1)
+        }
+        Ok(None) => {
+            println!("ok");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("simraft-node: {error}");
+            ExitCode::from(2)
+        }
     }
-    Ok(())
 }

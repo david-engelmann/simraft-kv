@@ -1,0 +1,4 @@
+/target/
+sweep-*.json
+proptest-regressions/
+.DS_Store

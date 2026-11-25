@@ -7,9 +7,10 @@
 )]
 mod common;
 
+use proptest::prelude::*;
 use simraft_core::{
-    Action, ClientId, EntryKind, Event, HardState, LogEntry, LogIndex, Message, Node, NodeId,
-    PersistKind, Term,
+    Action, ClientId, ClusterConfig, Config, EntryKind, Event, HardState, LogEntry, LogIndex,
+    Message, Node, NodeId, PersistKind, SnapshotMeta, Term,
 };
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -115,6 +116,10 @@ fn figure8_old_term_entry_not_committed_by_counting() {
         snapshot: None,
     });
     let _ = common::elect(&mut leader, &[NodeId(2), NodeId(3), NodeId(4)]);
+    let _ = leader.step(Event::Persisted {
+        kind: PersistKind::Entries,
+        up_to_index: LogIndex(2),
+    });
     assert_eq!(leader.current_term(), Term(2));
     assert_eq!(leader.log().last_index(), LogIndex(2));
 
@@ -298,5 +303,121 @@ fn same_index_applies_same_entry_on_all_nodes() {
             applies, reference,
             "node {id} applied a different history than the leader"
         );
+    }
+}
+
+#[test]
+fn append_below_base_never_commits_unverified_divergent_tail() {
+    let cluster = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new()).unwrap();
+    let mut follower = Node::new(NodeId(2), Config::default(), cluster.clone(), 13).unwrap();
+    // Snapshot covers through index 4 (term 2), plus an unverified divergent entry at index 5 (term 2).
+    let _ = follower.step(Event::Restored {
+        hard_state: HardState {
+            current_term: Term(2),
+            voted_for: None,
+        },
+        entries: vec![LogEntry {
+            term: Term(2),
+            kind: EntryKind::Command {
+                client_id: ClientId(9),
+                seq: 1,
+                payload: b"divergent".to_vec(),
+            },
+        }],
+        snapshot: Some(SnapshotMeta {
+            last_included_index: LogIndex(4),
+            last_included_term: Term(2),
+            config: cluster,
+        }),
+    });
+    assert_eq!(follower.commit_index(), LogIndex(4));
+    assert_eq!(follower.log().last_index(), LogIndex(5));
+
+    // A new leader in term 3 sends an AppendEntries starting below base_index (prev_log_index = 3)
+    // with leader_commit = 5. Because index 5 was NOT verified by this message, commit_index must
+    // remain bounded by base_index (4) and never apply the divergent entry at 5.
+    let actions = follower.step(Event::Message {
+        from: NodeId(1),
+        msg: Message::AppendEntries {
+            term: Term(3),
+            prev_log_index: LogIndex(3),
+            prev_log_term: Term(2),
+            entries: Vec::new(),
+            leader_commit: LogIndex(5),
+            read_round: 0,
+        },
+    });
+    assert_eq!(
+        follower.commit_index(),
+        LogIndex(4),
+        "on_append_below_base must bound commit advancement by base_index"
+    );
+    assert!(
+        !actions.iter().any(|a| matches!(a, Action::Apply { .. })),
+        "unverified divergent entry above base must never apply"
+    );
+}
+
+proptest! {
+    #[test]
+    fn heartbeat_never_commits_unverified_divergent_tail(
+        shared_len in 1_u64..=6,
+        divergent_len in 1_u64..=6,
+        extra_commit in 1_u64..=10,
+    ) {
+        let cluster = common::all_voters(&[1, 2, 3]);
+        let mut follower = Node::new(NodeId(2), Config::default(), cluster, 29).unwrap();
+        let mut entries = Vec::new();
+        for _ in 0..shared_len {
+            entries.push(LogEntry {
+                term: Term(1),
+                kind: EntryKind::NoOp,
+            });
+        }
+        for i in 0..divergent_len {
+            entries.push(LogEntry {
+                term: Term(2),
+                kind: EntryKind::Command {
+                    client_id: ClientId(55),
+                    seq: i + 1,
+                    payload: b"stale-divergent".to_vec(),
+                },
+            });
+        }
+        let _ = follower.step(Event::Restored {
+            hard_state: HardState {
+                current_term: Term(2),
+                voted_for: None,
+            },
+            entries,
+            snapshot: None,
+        });
+
+        // Term-3 leader sends an empty AppendEntries (heartbeat) verifying only `shared_len`,
+        // while advertising `leader_commit = shared_len + extra_commit` (committed on another majority).
+        let actions = follower.step(Event::Message {
+            from: NodeId(1),
+            msg: Message::AppendEntries {
+                term: Term(3),
+                prev_log_index: LogIndex(shared_len),
+                prev_log_term: Term(1),
+                entries: Vec::new(),
+                leader_commit: LogIndex(shared_len + extra_commit),
+                read_round: 0,
+            },
+        });
+        prop_assert_eq!(
+            follower.commit_index(),
+            LogIndex(shared_len),
+            "S-05: empty AppendEntries must never commit past prev_log_index"
+        );
+        for action in &actions {
+            if let Action::Apply { index, .. } = action {
+                prop_assert!(
+                    *index <= LogIndex(shared_len),
+                    "S-05: divergent tail entry at {index} was applied on heartbeat"
+                );
+            }
+        }
     }
 }

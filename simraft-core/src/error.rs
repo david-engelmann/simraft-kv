@@ -48,6 +48,11 @@ pub enum ConfigError {
     },
     /// A proposed cluster configuration has no voters.
     EmptyVoters,
+    /// A node was listed in both `voters` and `learners`.
+    OverlappingMember {
+        /// The node that appeared in both sets.
+        node: NodeId,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -84,6 +89,12 @@ impl fmt::Display for ConfigError {
             ),
             Self::EmptyVoters => {
                 write!(f, "cluster configuration must keep at least one voter")
+            }
+            Self::OverlappingMember { node } => {
+                write!(
+                    f,
+                    "node {node} cannot be both a voter and a learner in the same configuration"
+                )
             }
         }
     }
@@ -146,6 +157,14 @@ pub enum ProtocolError {
         /// The node named by the change.
         node: NodeId,
     },
+    /// A client proposal arrived while the leader's uncommitted tail
+    /// already held `Config::max_uncommitted_entries` entries.
+    TooManyUncommitted {
+        /// The number of uncommitted entries currently in the log.
+        uncommitted: usize,
+        /// The configured maximum uncommitted entries.
+        limit: usize,
+    },
 }
 
 impl fmt::Display for ProtocolError {
@@ -156,16 +175,16 @@ impl fmt::Display for ProtocolError {
                 commit_index,
             } => write!(
                 f,
-                "config change rejected: entry at index {last_config_index} is still \
-                 uncommitted (commit index {commit_index})"
+                "config change rejected: entry at {last_config_index} is still \
+                 uncommitted (commit {commit_index})"
             ),
             Self::LeaderNoopUncommitted {
                 noop_index,
                 commit_index,
             } => write!(
                 f,
-                "config change rejected: leader NoOp at index {noop_index} has not \
-                 committed (commit index {commit_index})"
+                "config change rejected: leader NoOp at {noop_index} has not \
+                 committed (commit {commit_index})"
             ),
             Self::LearnerNotCaughtUp {
                 node,
@@ -173,8 +192,8 @@ impl fmt::Display for ProtocolError {
                 required,
             } => write!(
                 f,
-                "learner {node} cannot be promoted: match index {match_index} is below \
-                 the required index {required}"
+                "learner {node} cannot be promoted: match {match_index} is below \
+                 the required {required}"
             ),
             Self::AlreadyVoter { node } => {
                 write!(f, "node {node} is already a voter")
@@ -189,6 +208,13 @@ impl fmt::Display for ProtocolError {
                 write!(
                     f,
                     "removing node {node} would leave the cluster with no voters"
+                )
+            }
+            Self::TooManyUncommitted { uncommitted, limit } => {
+                write!(
+                    f,
+                    "proposal rejected: {uncommitted} uncommitted entries reach \
+                     max_uncommitted_entries limit {limit}"
                 )
             }
         }
@@ -226,7 +252,7 @@ impl fmt::Display for SnapshotError {
                 received_offset,
             } => write!(
                 f,
-                "snapshot chunk for (index {last_included_index}, term {last_included_term}) \
+                "snapshot chunk for ({last_included_index}, {last_included_term}) \
                  arrived at offset {received_offset}, expected offset {expected_offset}"
             ),
         }

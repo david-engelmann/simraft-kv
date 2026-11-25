@@ -4,10 +4,11 @@
 //! and the file store, and steps the core for every input, the
 //! same discipline the simulator's harness uses. Around it: a
 //! ticker thread feeding `Tick` events at the configured
-//! interval, one connector thread per peer carrying section 7.1
-//! frames over TCP, and an accept loop that routes each inbound
-//! connection by its first four bytes: "SRKV" is a peer frame
-//! stream, anything else is a length-prefixed client message.
+//! interval, one connector thread per peer carrying wire frames
+//! over TCP with bounded outbound queues, and an accept loop that
+//! routes each inbound connection by its first four bytes:
+//! `"SRKV"` is a peer frame stream, anything else is a
+//! length-prefixed client message.
 //!
 //! Persistence is synchronous in the driver: a persist action
 //! is written and fsynced by the store before the driver steps
@@ -23,30 +24,39 @@
 //! client implementation retries within its budget.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError, channel, sync_channel};
 use std::time::Duration;
 
 use simraft_core::{
     Action, ClientId, ClientResult, Config, EntryKind, Event, LogIndex, Message, Node, NodeId,
     PersistKind, SnapshotMeta,
 };
+use simraft_kv::machine::ERR_DECODE;
 use simraft_kv::{
     ApplyOutcome, CommandResult, KvOp, KvStateMachine, decode_snapshot, encode_command,
     encode_snapshot,
 };
-use simraft_wire::{decode_frame, encode_frame, frame_len};
+use simraft_wire::{decode_frame, encode_frame, inspect_frame_header};
 
-use crate::client::{ClientResponse, decode_request, encode_response};
+use crate::client::{ClientResponse, MAX_CLIENT_BODY_BYTES, decode_request, encode_response};
 use crate::store::FileStore;
 use crate::{ClientOp, NodeConfig, NodeError};
 
 /// Entries past the log base that trigger a compaction check.
 const COMPACT_THRESHOLD: u64 = 128;
-/// Client sessions the state machine retains.
-const SESSION_CAPACITY: usize = 4096;
+/// Bounded capacity of the driver's inbound event queue.
+const INBOX_CAPACITY: usize = 4_096;
+/// Bounded capacity of each peer's outbound frame queue so a
+/// disconnected peer cannot grow memory unboundedly.
+const PEER_QUEUE_CAPACITY: usize = 256;
+/// Read and write timeout applied to client sockets and partial
+/// peer frames.
+const SOCKET_IO_TIMEOUT: Duration = Duration::from_secs(10);
+/// Write timeout applied to outbound peer sockets.
+const PEER_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// One input to the driver loop.
 enum Inbox {
@@ -71,7 +81,7 @@ struct Driver {
     machine: KvStateMachine,
     store: FileStore,
     members: BTreeMap<NodeId, SocketAddr>,
-    senders: BTreeMap<NodeId, Sender<Vec<u8>>>,
+    senders: BTreeMap<NodeId, SyncSender<Vec<u8>>>,
     pending_writes: BTreeMap<(ClientId, u64), Sender<ClientResponse>>,
     committed: BTreeSet<(ClientId, u64)>,
     outcomes: BTreeMap<(ClientId, u64), CommandResult>,
@@ -108,17 +118,7 @@ impl Driver {
     }
 
     /// Complete the persist cycle for this node's own
-    /// snapshot (invariant A-05): the core advances the base
-    /// on `SnapshotPersisted` and emits no `PersistSnapshot`
-    /// action for a node's own snapshot (that action is
-    /// reserved for received installs), so the driver writes
-    /// the bytes to the store, installs them into the
-    /// machine, loads them into the core, and steps the
-    /// acknowledgment itself, the same cycle the simulator's
-    /// harness completes in its own compaction path. Without
-    /// it the base never advances and no follower ever falls
-    /// behind it, which silently disarms the whole
-    /// `InstallSnapshot` relay in the adapter.
+    /// snapshot (invariant A-05).
     fn run_compaction(&mut self, meta: SnapshotMeta, data: Vec<u8>) -> Result<(), NodeError> {
         let parts = decode_snapshot(&data).map_err(|e| NodeError::CorruptStore {
             detail: format!("this node's own snapshot payload does not decode: {e}"),
@@ -135,8 +135,13 @@ impl Driver {
     fn act(&mut self, action: Action, queue: &mut VecDeque<Event>) -> Result<(), NodeError> {
         match action {
             Action::Send { to, msg } => {
-                if let Some(sender) = self.senders.get(&to) {
-                    let _ = sender.send(encode_frame(self.id, to, &msg));
+                if let Some(sender) = self.senders.get(&to)
+                    && let Ok(frame) = encode_frame(self.id, to, &msg)
+                {
+                    // Non-blocking enqueue: if a down peer's bounded queue is
+                    // full, dropping the frame keeps the driver responsive and
+                    // memory bounded; Raft heartbeats and retries retransmit.
+                    let _ = sender.try_send(frame);
                 }
             }
             Action::PersistHardState {
@@ -165,18 +170,6 @@ impl Driver {
                 });
             }
             Action::PersistSnapshot { meta, data } => {
-                // The payload enters the state machine here,
-                // paired with the cursor jump the core makes
-                // on SnapshotPersisted: for a received snapshot
-                // the install is what the machine holds at
-                // all, and without it the machine would
-                // silently miss the snapshotted state while
-                // the core applies past it; for the node's own
-                // snapshot the install restores exactly the
-                // state the machine already holds (invariant
-                // A-05). The payload decodes before anything
-                // is persisted, so a corrupt snapshot is never
-                // written to the store or served onward.
                 let parts = decode_snapshot(&data).map_err(|e| NodeError::CorruptStore {
                     detail: format!("a snapshot payload from the core does not decode: {e}"),
                 })?;
@@ -226,6 +219,11 @@ impl Driver {
                         let _ = reply.send(response);
                     }
                 }
+                ClientResult::Rejected { error } => {
+                    if let Some(reply) = self.pending_writes.remove(&(client_id, seq)) {
+                        let _ = reply.send(ClientResponse::Error(error.to_string()));
+                    }
+                }
             },
             Action::ConfigResponse { .. } => {}
             Action::StepDown { .. } => {
@@ -236,16 +234,21 @@ impl Driver {
     }
 
     /// Apply one committed entry to the state machine, record
-    /// the client outcome it carries, and run the follow-on
-    /// work an apply can unblock.
+    /// the client outcome it carries (including `DuplicateStale`
+    /// and `Failed` outcomes so `committed` and `pending_writes`
+    /// never leak or hang), and run follow-on work.
     fn apply_entry(&mut self, index: LogIndex, entry: &simraft_core::LogEntry) {
         if let EntryKind::Command { client_id, seq, .. } = &entry.kind {
             let key = (*client_id, *seq);
-            if let Ok(ApplyOutcome::Applied { result } | ApplyOutcome::Cached { result }) =
-                self.machine.apply(index, entry)
-            {
-                self.outcomes.insert(key, result);
-            }
+            let result = match self.machine.apply(index, entry) {
+                Ok(ApplyOutcome::Applied { result } | ApplyOutcome::Cached { result }) => result,
+                Ok(ApplyOutcome::DuplicateStale | ApplyOutcome::NotCommand) => CommandResult::Ack,
+                Ok(ApplyOutcome::Failed { error }) | Err(error) => CommandResult::Error {
+                    code: ERR_DECODE,
+                    message: error.to_string(),
+                },
+            };
+            self.outcomes.insert(key, result);
         } else {
             let _ = self.machine.apply(index, entry);
         }
@@ -262,6 +265,8 @@ impl Driver {
         let writes = std::mem::take(&mut self.pending_writes).into_values();
         let reads = std::mem::take(&mut self.pending_reads).into_values();
         self.deferred_reads.clear();
+        self.committed.clear();
+        self.outcomes.clear();
         for reply in writes.chain(reads) {
             let _ = reply.send(ClientResponse::Error("leadership lost; retry".to_string()));
         }
@@ -269,13 +274,8 @@ impl Driver {
 
     /// The snapshot payload for `meta`: the durable copy when
     /// it matches, otherwise rebuilt from the state machine
-    /// (the simulator's harness makes the same fallback). The
-    /// rebuild is fenced to the boundary the machine is
-    /// standing on (invariant A-06): `snapshot_parts` dumps the
-    /// machine's current state, so serving a rebuild for an
-    /// earlier boundary would label later store and session
-    /// state with that earlier index, and a follower installing
-    /// it would diverge when the intervening entries replay.
+    /// fenced strictly to the boundary the machine stands on
+    /// (invariant A-06).
     fn snapshot_bytes(&self, meta: &SnapshotMeta) -> Option<Vec<u8>> {
         if let Ok(Some((stored, data))) = self.store.read_snapshot()
             && stored == *meta
@@ -290,7 +290,7 @@ impl Driver {
                 meta.last_included_term,
                 self.node.cluster(),
             );
-            return Some(encode_snapshot(&parts));
+            return encode_snapshot(&parts).ok();
         }
         None
     }
@@ -336,9 +336,7 @@ impl Driver {
 
     /// The compaction plan for the current state, when the
     /// log past the base has reached the threshold and the
-    /// machine has applied through the commit index: the
-    /// snapshot identity and payload the driver persists and
-    /// installs once the core goes quiescent.
+    /// machine has applied through the commit index.
     fn compaction_plan(&self) -> Option<(SnapshotMeta, Vec<u8>)> {
         let commit = self.node.commit_index();
         let base = self.node.log().base_index();
@@ -356,12 +354,13 @@ impl Driver {
         let parts = self
             .machine
             .snapshot_parts(commit, term, self.node.cluster());
+        let data = encode_snapshot(&parts).ok()?;
         let meta = SnapshotMeta {
             last_included_index: commit,
             last_included_term: term,
             config: self.node.cluster().clone(),
         };
-        Some((meta, encode_snapshot(&parts)))
+        Some((meta, data))
     }
 
     fn handle(&mut self, inbox: Inbox) -> Result<(), NodeError> {
@@ -400,14 +399,18 @@ impl Driver {
         op: &KvOp,
         reply: Sender<ClientResponse>,
     ) -> Result<(), NodeError> {
+        let payload = match encode_command(client_id, seq, op) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let _ = reply.send(ClientResponse::Error(error.to_string()));
+                return Ok(());
+            }
+        };
         if let Some(old) = self.pending_writes.insert((client_id, seq), reply) {
-            // A retry of the same operation replaced this
-            // parked reply; unwind the older waiter at once.
             let _ = old.send(ClientResponse::Error(
                 "superseded by a retry of the same operation".to_string(),
             ));
         }
-        let payload = encode_command(client_id, seq, op);
         self.step(Event::Propose {
             client_id,
             seq,
@@ -417,10 +420,7 @@ impl Driver {
 }
 
 /// Build the core node and the state machine and restore the
-/// durable state into them: the snapshot first (installed into
-/// the machine and the core's log base), then the hard state
-/// and the log entries. The boot steps' own persistence is
-/// applied synchronously before any thread starts.
+/// durable state into them.
 fn boot(
     config: &NodeConfig,
     store: &mut FileStore,
@@ -433,6 +433,7 @@ fn boot(
         max_election_timeout: 100,
         ..Config::default()
     };
+    let max_sessions = core_config.max_sessions;
     let seed = config
         .id
         .0
@@ -442,11 +443,8 @@ fn boot(
         Node::new(config.id, core_config, cluster, seed).map_err(|e| NodeError::CoreConfig {
             reason: e.to_string(),
         })?;
-    let mut machine = KvStateMachine::new(SESSION_CAPACITY);
+    let mut machine = KvStateMachine::with_max_sessions(max_sessions);
     let mut boot_actions = Vec::new();
-    // The snapshot boundary installs into the core through the
-    // Restored event (invariant N-07); the verified bytes stay
-    // loaded afterwards so this node can relay them if it leads.
     let boot_snapshot = recovery.snapshot.clone();
     if let Some((_, data)) = &boot_snapshot {
         let parts = decode_snapshot(data).map_err(|e| NodeError::CorruptStore {
@@ -480,14 +478,11 @@ fn boot(
 }
 
 /// Run one node process until it is stopped, per the contract
-/// in the crate documentation. Boot restores the durable state
-/// (snapshot first, then the hard state and log) before any
-/// thread starts.
+/// in the crate documentation.
 ///
 /// # Errors
 /// Returns the first validation, configuration, or storage
-/// failure, with context. Once serving, a storage failure ends
-/// the run with that error rather than continuing undurably.
+/// failure, with context.
 pub fn run_node(config: &NodeConfig) -> Result<(), NodeError> {
     config.validate()?;
     let (mut store, recovery) = FileStore::open(&config.data_dir)?;
@@ -500,13 +495,13 @@ pub fn run_node(config: &NodeConfig) -> Result<(), NodeError> {
     let (node, machine) = boot(config, &mut store, recovery)?;
     let members: BTreeMap<NodeId, SocketAddr> =
         config.members.iter().map(|m| (m.id, m.addr)).collect();
-    let (inbox_tx, inbox_rx) = channel::<Inbox>();
-    let mut senders: BTreeMap<NodeId, Sender<Vec<u8>>> = BTreeMap::new();
+    let (inbox_tx, inbox_rx) = sync_channel::<Inbox>(INBOX_CAPACITY);
+    let mut senders: BTreeMap<NodeId, SyncSender<Vec<u8>>> = BTreeMap::new();
     for member in &config.members {
         if member.id == config.id {
             continue;
         }
-        let (tx, rx) = channel::<Vec<u8>>();
+        let (tx, rx) = sync_channel::<Vec<u8>>(PEER_QUEUE_CAPACITY);
         senders.insert(member.id, tx);
         let addr = member.addr;
         std::thread::spawn(move || peer_connector(addr, rx));
@@ -533,8 +528,9 @@ pub fn run_node(config: &NodeConfig) -> Result<(), NodeError> {
         std::thread::spawn(move || {
             loop {
                 std::thread::sleep(Duration::from_millis(tick_ms));
-                if tx.send(Inbox::Tick).is_err() {
-                    return;
+                match tx.try_send(Inbox::Tick) {
+                    Ok(()) | Err(TrySendError::Full(_)) => {}
+                    Err(TrySendError::Disconnected(_)) => return,
                 }
             }
         });
@@ -558,32 +554,44 @@ pub fn run_node(config: &NodeConfig) -> Result<(), NodeError> {
     Ok(())
 }
 
-/// Carry queued frames to one peer, reconnecting whenever the
-/// peer is down or the connection breaks. Frames are never
-/// consumed from the queue while disconnected; Raft's
-/// retransmission covers anything a broken connection drops
-/// mid-write.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "thread entry point: the value moves into the spawned thread and is owned there"
 )]
 fn peer_connector(addr: SocketAddr, rx: Receiver<Vec<u8>>) {
+    let mut pending: Option<Vec<u8>> = None;
     loop {
-        match TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
-            Ok(mut stream) => {
-                let _ = stream.set_nodelay(true);
-                loop {
-                    match rx.recv() {
-                        Ok(frame) => {
-                            if stream.write_all(&frame).is_err() {
-                                break;
-                            }
+        let first_frame = match pending.take() {
+            Some(frame) => frame,
+            None => match rx.recv() {
+                Ok(frame) => frame,
+                Err(_) => return,
+            },
+        };
+        if let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_secs(2)) {
+            let _ = stream.set_nodelay(true);
+            let _ = stream.set_write_timeout(Some(PEER_WRITE_TIMEOUT));
+            let _ = stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT));
+            if stream.write_all(&first_frame).is_err() {
+                std::thread::sleep(Duration::from_millis(50));
+                continue;
+            }
+            loop {
+                match rx.recv() {
+                    Ok(frame) => {
+                        if stream.write_all(&frame).is_err() {
+                            pending = Some(frame);
+                            break;
                         }
-                        Err(_) => return, // the driver is gone
                     }
+                    Err(_) => return,
                 }
             }
-            Err(_) => std::thread::sleep(Duration::from_millis(100)),
+        } else {
+            // Drain stale frames accumulated while the peer is unreachable
+            // so reconnecting sends fresh heartbeats rather than an old backlog.
+            while rx.try_recv().is_ok() {}
+            std::thread::sleep(Duration::from_millis(50));
         }
     }
 }
@@ -592,7 +600,7 @@ fn peer_connector(addr: SocketAddr, rx: Receiver<Vec<u8>>) {
     clippy::needless_pass_by_value,
     reason = "thread entry point: the value moves into the spawned thread and is owned there"
 )]
-fn accept_loop(listener: TcpListener, inbox: Sender<Inbox>) {
+fn accept_loop(listener: TcpListener, inbox: SyncSender<Inbox>) {
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
@@ -604,8 +612,14 @@ fn accept_loop(listener: TcpListener, inbox: Sender<Inbox>) {
     }
 }
 
-fn handle_connection(mut stream: TcpStream, inbox: Sender<Inbox>) {
+#[allow(
+    clippy::needless_pass_by_value,
+    reason = "thread entry point: the sender moves into the connection handler"
+)]
+fn handle_connection(mut stream: TcpStream, inbox: SyncSender<Inbox>) {
     let _ = stream.set_nodelay(true);
+    let _ = stream.set_read_timeout(Some(SOCKET_IO_TIMEOUT));
+    let _ = stream.set_write_timeout(Some(SOCKET_IO_TIMEOUT));
     let mut first = [0_u8; 4];
     if stream.read_exact(&mut first).is_err() {
         return;
@@ -616,7 +630,7 @@ fn handle_connection(mut stream: TcpStream, inbox: Sender<Inbox>) {
     }
     // Client message: the first four bytes are its length.
     let len = u32::from_le_bytes(first) as usize;
-    if len > 64 * 1024 * 1024 {
+    if len > MAX_CLIENT_BODY_BYTES {
         return;
     }
     let mut body = vec![0_u8; len];
@@ -627,16 +641,20 @@ fn handle_connection(mut stream: TcpStream, inbox: Sender<Inbox>) {
         return;
     };
     let (reply_tx, reply_rx) = channel::<ClientResponse>();
-    if inbox
-        .send(Inbox::Client {
-            client_id,
-            seq,
-            op,
-            reply: reply_tx,
-        })
-        .is_err()
-    {
-        return;
+    match inbox.try_send(Inbox::Client {
+        client_id,
+        seq,
+        op,
+        reply: reply_tx,
+    }) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            let _ = stream.write_all(&encode_response(&ClientResponse::Error(
+                "node inbox busy; retry".to_string(),
+            )));
+            return;
+        }
+        Err(TrySendError::Disconnected(_)) => return,
     }
     if let Ok(response) = reply_rx.recv_timeout(Duration::from_secs(30)) {
         let _ = stream.write_all(&encode_response(&response));
@@ -646,7 +664,10 @@ fn handle_connection(mut stream: TcpStream, inbox: Sender<Inbox>) {
 /// A reassembly buffer for a peer frame stream.
 ///
 /// Bytes arrive in arbitrary chunks and whole frames come out
-/// by their headers, however the stream split them.
+/// by their headers, however the stream split them. Bad magic
+/// or a body length above [`simraft_wire::MAX_FRAME_BODY_LEN`]
+/// (16 MiB) is rejected as soon as the header bytes arrive
+/// without buffering the body.
 #[derive(Debug, Default)]
 pub struct FrameBuffer {
     buffer: Vec<u8>,
@@ -659,23 +680,34 @@ impl FrameBuffer {
         Self { buffer: Vec::new() }
     }
 
+    /// Whether the buffer currently holds zero partial-frame bytes.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
     /// Append freshly read bytes.
     pub fn push(&mut self, bytes: &[u8]) {
         self.buffer.extend_from_slice(bytes);
     }
 
     /// The next whole frame in the buffer, decoded, when one
-    /// has fully arrived.
+    /// has fully arrived (or an immediate error when the header
+    /// carries bad magic or an oversized length).
     ///
     /// # Errors
-    /// Returns the `simraft_wire::WireError` when the frame at
-    /// the front of the buffer is corrupt; the caller ends the
-    /// connection, and Raft retransmission carries the content
-    /// again over a fresh one.
+    /// Returns `simraft_wire::WireError` when the frame at the
+    /// front of the buffer is oversized or corrupt.
     pub fn next_frame(
         &mut self,
     ) -> Option<Result<(NodeId, NodeId, Message), simraft_wire::WireError>> {
-        let total = frame_len(&self.buffer)?;
+        let total = match inspect_frame_header(&self.buffer)? {
+            Ok(total) => total,
+            Err(err) => {
+                self.buffer.clear();
+                return Some(Err(err));
+            }
+        };
         if self.buffer.len() < total {
             return None;
         }
@@ -684,17 +716,11 @@ impl FrameBuffer {
     }
 }
 
-/// Read a peer frame stream.
-///
-/// Buffer bytes, extract whole frames by their headers,
-/// decode, and forward. A corrupt frame ends the connection;
-/// the peer reconnects and Raft retransmission carries the
-/// content again.
 #[allow(
     clippy::needless_pass_by_value,
     reason = "thread entry point: the value moves into the spawned thread and is owned there"
 )]
-fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: Sender<Inbox>) {
+fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: SyncSender<Inbox>) {
     let mut frames = FrameBuffer::new();
     frames.push(&seed);
     let mut chunk = [0_u8; 16 * 1024];
@@ -710,8 +736,17 @@ fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: Sender<Inbox>) {
             }
         }
         match stream.read(&mut chunk) {
-            Ok(0) | Err(_) => return,
+            Ok(0) => return,
             Ok(n) => frames.push(&chunk[..n]),
+            Err(err)
+                if matches!(err.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut)
+                    && frames.is_empty() =>
+            {
+                // An idle peer link at a clean frame boundary stays open;
+                // a stalled partial frame (!frames.is_empty()) falls through
+                // and closes the socket.
+            }
+            Err(_) => return,
         }
     }
 }
@@ -721,10 +756,6 @@ mod tests {
     use super::*;
     use simraft_core::{ClusterConfig, Role, Term};
 
-    /// Deliver any frames the driver addressed to itself back
-    /// into it as messages. The core's sends to its own id
-    /// (its pre-vote and vote in an election it runs) have no
-    /// peer thread to carry them in this harness.
     fn pump(driver: &mut Driver, inbox: &Receiver<Vec<u8>>) {
         while let Ok(frame) = inbox.try_recv() {
             let (from, _to, msg) = decode_frame(&frame).expect("self frame decodes");
@@ -734,25 +765,51 @@ mod tests {
         }
     }
 
-    /// Step one scripted peer message into the driver.
     fn peer(driver: &mut Driver, from: NodeId, msg: Message) {
         driver
             .step(Event::Message { from, msg })
             .expect("peer message steps");
     }
 
-    /// Build a driver for the leader of a three-voter cluster
-    /// in a fresh store directory and drive it through an
-    /// election and a handful of applied puts, so its machine
-    /// stands past the first log indexes with no snapshot in
-    /// the store. The two peers are scripted responses, not
-    /// drivers: their pre-vote, vote, and append responses are
-    /// what the core's commit rule counts, so the leader's
-    /// applies arrive through the same path as a live
-    /// cluster's.
+    fn seat_leader(driver: &mut Driver, inbox: &Receiver<Vec<u8>>) {
+        driver
+            .step(Event::Tick { now: 1_000_000 })
+            .expect("election tick steps");
+        pump(driver, inbox);
+        let term = driver.node.current_term();
+        peer(
+            driver,
+            NodeId(2),
+            Message::RequestPreVoteResponse {
+                term,
+                vote_granted: true,
+            },
+        );
+        pump(driver, inbox);
+        let term = driver.node.current_term();
+        peer(
+            driver,
+            NodeId(2),
+            Message::RequestVoteResponse {
+                term,
+                vote_granted: true,
+            },
+        );
+        pump(driver, inbox);
+        assert_eq!(
+            driver.node.role(),
+            Role::Leader,
+            "the scripted election must seat the leader"
+        );
+    }
+
     fn applied_driver() -> (Driver, PathBuf) {
-        let dir =
-            std::env::temp_dir().join(format!("simraft-node-fence-test-{}", std::process::id()));
+        static NEXT_DIR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let id = NEXT_DIR.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!(
+            "simraft-node-runtime-test-{}-{id}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         let (store, recovery) = FileStore::open(&dir).expect("store opens");
         let cluster = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
@@ -763,13 +820,14 @@ mod tests {
             max_election_timeout: 100,
             ..Config::default()
         };
+        let max_sessions = config.max_sessions;
         let node =
             Node::new(NodeId(1), config, cluster, 0x9E37_79B9_7F4A_7C15 + 1).expect("node builds");
-        let (sender, inbox) = channel::<Vec<u8>>();
+        let (sender, inbox) = sync_channel::<Vec<u8>>(PEER_QUEUE_CAPACITY);
         let mut driver = Driver {
             id: NodeId(1),
             node,
-            machine: KvStateMachine::new(SESSION_CAPACITY),
+            machine: KvStateMachine::with_max_sessions(max_sessions),
             store,
             members: BTreeMap::new(),
             senders: BTreeMap::from([(NodeId(1), sender)]),
@@ -789,35 +847,7 @@ mod tests {
                 snapshot: recovery.snapshot.map(|(meta, _)| meta),
             })
             .expect("restore steps");
-        driver
-            .step(Event::Tick { now: 1_000_000 })
-            .expect("election tick steps");
-        pump(&mut driver, &inbox);
-        let term = driver.node.current_term();
-        peer(
-            &mut driver,
-            NodeId(2),
-            Message::RequestPreVoteResponse {
-                term,
-                vote_granted: true,
-            },
-        );
-        pump(&mut driver, &inbox);
-        let term = driver.node.current_term();
-        peer(
-            &mut driver,
-            NodeId(2),
-            Message::RequestVoteResponse {
-                term,
-                vote_granted: true,
-            },
-        );
-        pump(&mut driver, &inbox);
-        assert_eq!(
-            driver.node.role(),
-            Role::Leader,
-            "the scripted election must seat the leader"
-        );
+        seat_leader(&mut driver, &inbox);
         for seq in 1..=4_u64 {
             let payload = encode_command(
                 ClientId(7),
@@ -826,7 +856,8 @@ mod tests {
                     key: format!("key-{seq}").into_bytes(),
                     value: format!("value-{seq}").into_bytes(),
                 },
-            );
+            )
+            .expect("command encodes");
             driver
                 .step(Event::Propose {
                     client_id: ClientId(7),
@@ -852,13 +883,6 @@ mod tests {
         (driver, dir)
     }
 
-    /// Invariant A-06: a rebuilt snapshot payload is served
-    /// only for the boundary the machine is standing on. A
-    /// request for an earlier boundary the machine has already
-    /// applied past must get no payload, never the machine's
-    /// later state relabeled with the earlier index, because a
-    /// follower installing that payload would diverge from
-    /// the log it is about to replay.
     #[test]
     fn snapshot_rebuild_never_serves_later_state_under_an_earlier_boundary() {
         let (driver, dir) = applied_driver();
@@ -900,6 +924,80 @@ mod tests {
             .expect("the boundary the machine stands on is served");
         let parts = decode_snapshot(&bytes).expect("the served payload decodes");
         assert_eq!(parts.last_included_index, applied);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn duplicate_stale_and_failed_applies_complete_parked_writes_without_hanging() {
+        let (mut driver, dir) = applied_driver();
+        assert_eq!(
+            driver.machine.max_sessions(),
+            Config::default().max_sessions
+        );
+
+        // ClientId(7) already applied seq 1..=4 in applied_driver; proposing seq 1
+        // again hits ApplyOutcome::DuplicateStale when committed.
+        let (reply_tx, reply_rx) = channel();
+        driver
+            .propose(
+                ClientId(7),
+                1,
+                &KvOp::Put {
+                    key: b"stale".to_vec(),
+                    value: b"ignored".to_vec(),
+                },
+                reply_tx,
+            )
+            .expect("stale proposal steps");
+        let term = driver.node.current_term();
+        let last = driver.node.log().last_index();
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::AppendEntriesResponse {
+                term,
+                success: true,
+                match_index: last,
+                conflict_index: LogIndex::ZERO,
+                conflict_term: Term::ZERO,
+                read_round: 0,
+            },
+        );
+        let response = reply_rx
+            .try_recv()
+            .expect("DuplicateStale must immediately resolve parked write");
+        assert_eq!(response, ClientResponse::Ok(None));
+        assert!(driver.committed.is_empty());
+
+        // Malformed command payload hits ApplyOutcome::Failed and resolves with Error.
+        let (bad_tx, bad_rx) = channel();
+        driver.pending_writes.insert((ClientId(99), 1), bad_tx);
+        driver
+            .step(Event::Propose {
+                client_id: ClientId(99),
+                seq: 1,
+                payload: vec![0xFF],
+            })
+            .expect("bad payload proposal steps");
+        let last = driver.node.log().last_index();
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::AppendEntriesResponse {
+                term,
+                success: true,
+                match_index: last,
+                conflict_index: LogIndex::ZERO,
+                conflict_term: Term::ZERO,
+                read_round: 0,
+            },
+        );
+        let bad_resp = bad_rx
+            .try_recv()
+            .expect("Failed apply must immediately resolve parked write");
+        assert!(matches!(bad_resp, ClientResponse::Error(_)));
+        assert!(driver.committed.is_empty());
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

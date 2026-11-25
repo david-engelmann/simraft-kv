@@ -1,11 +1,8 @@
-//! Cluster configuration representation.
+//! Cluster configuration representation and single-server membership
+//! change rules (`AddLearner`, `PromoteVoter`, `RemoveVoter`).
 //!
-//! At M1 the configuration is static: it is supplied at node construction
-//! and never changes. Single-server configuration changes (`AddLearner`,
-//! `PromoteVoter`, `RemoveVoter`) land at M3 and extend this module; the
-//! representation and the quorum arithmetic they rely on live here from
-//! the start, so every quorum decision at every milestone is computed
-//! against exactly one `ClusterConfig` (invariant M-05).
+//! Every quorum decision is computed against exactly one
+//! `ClusterConfig` (invariant M-05).
 
 use crate::error::{ConfigError, ProtocolError};
 use crate::ids::LogIndex;
@@ -29,8 +26,10 @@ impl ClusterConfig {
     ///
     /// # Errors
     ///
-    /// Returns `ConfigError::EmptyVoters` when the voter list is empty: a
-    /// cluster may shrink to one voter, never to none.
+    /// Returns `ConfigError::EmptyVoters` when the voter list is empty
+    /// (a cluster may shrink to one voter, never to none) and
+    /// `ConfigError::OverlappingMember` when a node appears in both
+    /// `voters` and `learners`.
     pub fn new(
         voters: impl IntoIterator<Item = NodeId>,
         learners: impl IntoIterator<Item = NodeId>,
@@ -41,6 +40,9 @@ impl ClusterConfig {
         };
         if cfg.voters.is_empty() {
             return Err(ConfigError::EmptyVoters);
+        }
+        if let Some(&node) = cfg.voters.intersection(&cfg.learners).next() {
+            return Err(ConfigError::OverlappingMember { node });
         }
         Ok(cfg)
     }

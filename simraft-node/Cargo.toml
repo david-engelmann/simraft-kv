@@ -5,14 +5,24 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Real I/O adapter for simraft-kv: runs one core node as a process with TCP transport and file storage"
+documentation = "https://docs.rs/simraft-node"
+readme = "README.md"
+description = "TCP and file-backed Raft node server and linearizable KV client for simraft-kv"
 keywords = ["raft", "consensus", "key-value", "server"]
 categories = ["database-implementations", "network-programming"]
 
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-v{ version }-{ target }.{ archive-format }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
-simraft-core = { path = "../simraft-core" }
-simraft-kv = { path = "../simraft-kv" }
-simraft-wire = { path = "../simraft-wire" }
+simraft-core = { version = "0.1.0", path = "../simraft-core" }
+simraft-kv = { version = "0.1.0", path = "../simraft-kv" }
+simraft-wire = { version = "0.1.0", path = "../simraft-wire" }
 clap = { version = "4", features = ["derive"] }
 crc32fast = "1"
 

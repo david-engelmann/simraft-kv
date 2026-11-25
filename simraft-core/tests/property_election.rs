@@ -8,6 +8,7 @@
 mod common;
 
 use common::Harness;
+use proptest::prelude::*;
 use simraft_core::{
     Action, EntryKind, Event, HardState, LogEntry, LogIndex, Message, Node, NodeId, PersistKind,
     Role, Term,
@@ -195,4 +196,64 @@ fn stale_log_candidate_is_refused() {
         let _ = &mut voter;
     }
     assert_eq!(Role::Follower, Role::Follower);
+}
+
+proptest! {
+    #[test]
+    fn up_to_date_voting_rule_holds_over_arbitrary_tips(
+        mut voter_terms in prop::collection::vec(1_u64..=5, 0..=10),
+        cand_idx in 0_u64..=12,
+        cand_term_raw in 0_u64..=6,
+    ) {
+        voter_terms.sort_unstable();
+        let cand_term = if cand_idx == 0 { 0 } else { cand_term_raw.max(1) };
+        let voter_last_idx = voter_terms.len() as u64;
+        let voter_last_term = voter_terms.last().copied().unwrap_or(0);
+        let expected = (cand_term, cand_idx) >= (voter_last_term, voter_last_idx);
+
+        let entries: Vec<LogEntry> = voter_terms
+            .iter()
+            .map(|&t| LogEntry {
+                term: Term(t),
+                kind: EntryKind::NoOp,
+            })
+            .collect();
+        let mut voter = Node::new(
+            NodeId(2),
+            simraft_core::Config::default(),
+            common::all_voters(&[1, 2, 3]),
+            5,
+        )
+        .unwrap();
+        let _ = voter.step(Event::Restored {
+            hard_state: HardState {
+                current_term: Term(6),
+                voted_for: None,
+            },
+            entries,
+            snapshot: None,
+        });
+        let mut all = voter.step(Event::Message {
+            from: NodeId(1),
+            msg: Message::RequestVote {
+                term: Term(7),
+                last_log_index: LogIndex(cand_idx),
+                last_log_term: Term(cand_term),
+            },
+        });
+        if all.iter().any(|a| matches!(a, Action::PersistHardState { .. })) {
+            all.extend(voter.step(Event::Persisted {
+                kind: PersistKind::HardState,
+                up_to_index: LogIndex::ZERO,
+            }));
+        }
+        let granted = all.iter().any(|a| matches!(
+            a,
+            Action::Send {
+                msg: Message::RequestVoteResponse { vote_granted: true, .. },
+                ..
+            }
+        ));
+        prop_assert_eq!(granted, expected);
+    }
 }

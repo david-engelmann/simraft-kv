@@ -5,7 +5,7 @@ members = ["simraft-core", "simraft-kv", "simraft-sim", "simraft-node", "simraft
 [workspace.package]
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.85"
+rust-version = "1.88"
 repository = "https://github.com/david-engelmann/simraft-kv"
 
 [workspace.lints.rust]

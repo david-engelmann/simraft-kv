@@ -1,9 +1,9 @@
 //! Shared test drivers: a small routed cluster with automatic persist
 //! acknowledgment, plus a manual election helper for single-node tests.
 //!
-//! These drivers are deliberately simple versions of what simraft-sim
-//! generalizes at M4: messages route immediately, persists acknowledge
-//! immediately, and time only moves when a test ticks the cluster.
+//! These drivers are deliberately direct in-memory clusters:
+//! messages route immediately, persists acknowledge immediately,
+//! and time only moves when a test ticks the cluster.
 
 use simraft_core::{
     Action, ClusterConfig, Config, Event, LogEntry, LogIndex, Message, Node, NodeId, PersistKind,

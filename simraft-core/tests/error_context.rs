@@ -1,7 +1,9 @@
 //! Tests that domain errors carry their diagnostic context
-//! (invariant E-01, config error portion).
+//! (invariant E-01).
 
-use simraft_core::{ClusterConfig, Config, ConfigError};
+use simraft_core::{
+    ClusterConfig, Config, ConfigError, LogIndex, NodeId, ProtocolError, SnapshotError, Term,
+};
 
 #[test]
 fn config_error_names_both_timeout_values() {
@@ -49,15 +51,21 @@ fn zero_value_error_names_the_field() {
 }
 
 #[test]
-fn empty_voters_error_is_explicit() {
+fn empty_and_overlapping_voters_errors_are_explicit() {
     let err = ClusterConfig::new(std::iter::empty(), std::iter::empty()).unwrap_err();
     assert_eq!(err, ConfigError::EmptyVoters);
     assert!(err.to_string().contains("at least one voter"));
+
+    let overlap = ClusterConfig::new([NodeId(1), NodeId(2)], [NodeId(2), NodeId(3)]).unwrap_err();
+    assert_eq!(overlap, ConfigError::OverlappingMember { node: NodeId(2) });
+    assert!(
+        overlap.to_string().contains("n2"),
+        "overlap error must name the conflicting node: {overlap}"
+    );
 }
 
 #[test]
-fn membership_rejections_name_the_deciding_values() {
-    use simraft_core::{LogIndex, NodeId, ProtocolError};
+fn membership_and_backpressure_rejections_name_the_deciding_values() {
     let pending = ProtocolError::ConfigChangePending {
         last_config_index: LogIndex(7),
         commit_index: LogIndex(3),
@@ -65,6 +73,11 @@ fn membership_rejections_name_the_deciding_values() {
     .to_string();
     assert!(pending.contains("index 7"), "got: {pending}");
     assert!(pending.contains("index 3"), "got: {pending}");
+    assert!(
+        !pending.contains("index index"),
+        "duplicate prefix: {pending}"
+    );
+
     let noop = ProtocolError::LeaderNoopUncommitted {
         noop_index: LogIndex(1),
         commit_index: LogIndex::ZERO,
@@ -73,6 +86,8 @@ fn membership_rejections_name_the_deciding_values() {
     assert!(noop.contains("NoOp at index"), "got: {noop}");
     assert!(noop.contains("index 1"), "got: {noop}");
     assert!(noop.contains("index 0"), "got: {noop}");
+    assert!(!noop.contains("index index"), "duplicate prefix: {noop}");
+
     let caught = ProtocolError::LearnerNotCaughtUp {
         node: NodeId(4),
         match_index: LogIndex(2),
@@ -82,11 +97,25 @@ fn membership_rejections_name_the_deciding_values() {
     assert!(caught.contains("learner n4"), "got: {caught}");
     assert!(caught.contains("index 2"), "got: {caught}");
     assert!(caught.contains("index 5"), "got: {caught}");
+    assert!(
+        !caught.contains("index index"),
+        "duplicate prefix: {caught}"
+    );
+
+    let backpressure = ProtocolError::TooManyUncommitted {
+        uncommitted: 10_000,
+        limit: 10_000,
+    }
+    .to_string();
+    assert!(backpressure.contains("10000"), "got: {backpressure}");
+    assert!(
+        backpressure.contains("max_uncommitted_entries"),
+        "got: {backpressure}"
+    );
 }
 
 #[test]
 fn snapshot_rejection_names_identity_and_offsets() {
-    use simraft_core::{LogIndex, SnapshotError, Term};
     let err = SnapshotError::ChunkOffset {
         last_included_index: LogIndex(9),
         last_included_term: Term(3),
@@ -95,7 +124,9 @@ fn snapshot_rejection_names_identity_and_offsets() {
     }
     .to_string();
     assert!(err.contains("index 9"), "got: {err}");
-    assert!(err.contains("term term 3"), "got: {err}");
+    assert!(err.contains("term 3"), "got: {err}");
+    assert!(!err.contains("index index"), "duplicate prefix: {err}");
+    assert!(!err.contains("term term"), "duplicate prefix: {err}");
     assert!(err.contains("offset 40"), "got: {err}");
     assert!(err.contains("expected offset 12"), "got: {err}");
 }

@@ -5,6 +5,7 @@
 //! spans, crash and clock-jump rates for the chaos phase, and
 //! scripted operations a scenario can schedule at exact ticks.
 
+use crate::rng::Rng;
 use simraft_core::{ConfigChange, LogIndex, NodeId};
 
 /// A directed partition: delivery from `from` to `to` is denied
@@ -122,6 +123,94 @@ impl FaultConfig {
             clock_jump_per_mille: 0,
             max_clock_jump: 0,
             partitions: Vec::new(),
+        }
+    }
+
+    /// A deterministic multi-fault chaos profile derived from `seed`.
+    ///
+    /// Combines packet drops, duplicates, variable reordering latency,
+    /// minor wire-frame bit-flip corruption, node crashes, clock jumps,
+    /// and intermittent asymmetric/chain/isolation partitions strictly
+    /// inside `[0, chaos_ticks)`.
+    #[must_use]
+    pub fn chaos(seed: u64, node_count: usize, chaos_ticks: u64) -> Self {
+        let mut rng = Rng::new(seed ^ 0xC4A0_5EC4_A05E_0001);
+        let mut partitions = Vec::new();
+        let n = u64::try_from(node_count).unwrap_or(0);
+        if n >= 2 && chaos_ticks >= 1_200 {
+            let usable_end = chaos_ticks.saturating_sub(200);
+            let mut cursor = 200_u64 + rng.next_below(250);
+            for _ in 0..2 {
+                if cursor + 400 >= usable_end {
+                    break;
+                }
+                let max_span = (usable_end - cursor).min(900);
+                let span = rng.range_inclusive(350.min(max_span), max_span);
+                let end = cursor + span;
+                let a = 1 + rng.next_below(n);
+                let mut b = 1 + rng.next_below(n - 1);
+                if b >= a {
+                    b += 1;
+                }
+                match rng.next_below(3) {
+                    0 => {
+                        // Asymmetric one-way cut: A cannot reach B, B can reach A.
+                        partitions.push(DirectedCut {
+                            from: NodeId(a),
+                            to: NodeId(b),
+                            start: cursor,
+                            end,
+                        });
+                    }
+                    1 if n >= 3 => {
+                        // Chain partition: A and B cannot reach each other directly,
+                        // while intermediate nodes still bridge them.
+                        partitions.push(DirectedCut {
+                            from: NodeId(a),
+                            to: NodeId(b),
+                            start: cursor,
+                            end,
+                        });
+                        partitions.push(DirectedCut {
+                            from: NodeId(b),
+                            to: NodeId(a),
+                            start: cursor,
+                            end,
+                        });
+                    }
+                    _ => {
+                        // Full isolation of node A from every peer.
+                        for peer in 1..=n {
+                            if peer != a {
+                                partitions.push(DirectedCut {
+                                    from: NodeId(a),
+                                    to: NodeId(peer),
+                                    start: cursor,
+                                    end,
+                                });
+                                partitions.push(DirectedCut {
+                                    from: NodeId(peer),
+                                    to: NodeId(a),
+                                    start: cursor,
+                                    end,
+                                });
+                            }
+                        }
+                    }
+                }
+                cursor = end + rng.range_inclusive(250, 500);
+            }
+        }
+        Self {
+            drop_per_mille: 30,
+            duplicate_per_mille: 15,
+            corrupt_per_mille: 15,
+            latency_min: 1,
+            latency_max: 15,
+            crash_per_mille: 1,
+            clock_jump_per_mille: 1,
+            max_clock_jump: 2_000,
+            partitions,
         }
     }
 }

@@ -128,6 +128,24 @@ fn split_record<'a>(domain: &[u8], bytes: &'a [u8]) -> Option<(&'a [u8], u32, u3
     Some((&bytes[10..total - 4], stored, computed, total))
 }
 
+/// Fsync the parent directory entry after an atomic rename on Unix.
+/// Windows denies `File::open` on directory paths without backup
+/// semantics (`ERROR_ACCESS_DENIED`) and commits rename metadata via
+/// the filesystem journal, so directory sync is a no-op outside Unix.
+fn sync_parent_dir(dir: &Path) -> Result<(), NodeError> {
+    #[cfg(unix)]
+    {
+        File::open(dir)
+            .and_then(|d| d.sync_all())
+            .map_err(|e| io(dir, e))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = dir;
+    }
+    Ok(())
+}
+
 fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), NodeError> {
     let tmp = dir.join(format!("{name}.tmp"));
     let target = dir.join(name);
@@ -137,9 +155,7 @@ fn write_atomic(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), NodeError> {
         file.sync_all().map_err(|e| io(&tmp, e))?;
     }
     std::fs::rename(&tmp, &target).map_err(|e| io(&target, e))?;
-    File::open(dir)
-        .and_then(|d| d.sync_all())
-        .map_err(|e| io(dir, e))?;
+    sync_parent_dir(dir)?;
     Ok(())
 }
 
@@ -257,9 +273,12 @@ impl FileStore {
         let mut offset = truncate_at;
         for (i, entry) in entries.iter().enumerate() {
             let index = from_index.0 + u64::try_from(i).unwrap_or(u64::MAX);
-            let mut payload = Vec::with_capacity(64);
+            let encoded_entry = encode_entry_bytes(entry).map_err(|e| NodeError::CorruptStore {
+                detail: format!("log entry at index {index} cannot be encoded: {e}"),
+            })?;
+            let mut payload = Vec::with_capacity(8 + encoded_entry.len());
             payload.extend_from_slice(&index.to_le_bytes());
-            payload.extend_from_slice(&encode_entry_bytes(entry));
+            payload.extend_from_slice(&encoded_entry);
             let record = record_bytes(*LOG_MAGIC, LOG_DOMAIN, &payload);
             file.write_all(&record).map_err(|e| io(&path, e))?;
             let len = u64::try_from(record.len()).unwrap_or(u64::MAX);
@@ -278,7 +297,9 @@ impl FileStore {
     /// # Errors
     /// Returns `NodeError::Io` on filesystem failures.
     pub fn write_snapshot(&mut self, meta: &SnapshotMeta, data: &[u8]) -> Result<(), NodeError> {
-        let config = encode_config_bytes(&meta.config);
+        let config = encode_config_bytes(&meta.config).map_err(|e| NodeError::CorruptStore {
+            detail: format!("snapshot configuration cannot be encoded: {e}"),
+        })?;
         let mut payload = Vec::with_capacity(24 + config.len() + data.len());
         payload.extend_from_slice(&meta.last_included_index.0.to_le_bytes());
         payload.extend_from_slice(&meta.last_included_term.0.to_le_bytes());

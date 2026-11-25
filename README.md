@@ -1,145 +1,157 @@
 # simraft-kv
 
-simraft-kv is a Raft consensus implementation in Rust. Raft is how a
-group of servers agrees on one shared history of commands even when
-some of them crash or lose contact with each other. On top of that
-agreement, simraft-kv runs a small key-value store, so the group acts
-as one reliable store that keeps working as long as most of its
-members are alive.
+`simraft-kv` is a deterministic Raft consensus implementation and
+replicated key-value store in Rust. A cluster of nodes agrees on one
+ordered history of commands even when individual servers crash, disk
+tails tear, or network links drop, reorder, or partition packets.
 
-The project is built for proof, not just for use. The protocol core
-makes decisions and performs no input or output of its own, which
-means a test driver can feed it events in any order, drop or delay
-messages, crash nodes, and replay the whole run from a seed. Every
-behavior the design promises is written down as a numbered invariant
-and tied to a test that would fail if the promise broke.
+The consensus engine makes protocol decisions as a pure function of
+input events and performs zero input or output on its own. That
+split lets a deterministic simulator drive an entire cluster on a
+virtual clock from a single 64-bit seed while a production TCP and
+file adapter runs the exact same core and wire format across real
+processes. Every promised safety, durability, liveness, determinism,
+and latency property maps to an executable test, oracle, or
+benchmark in `docs/INVARIANTS.md`.
 
-## What is in the workspace
+## Workspace crates
 
-- `simraft-core` holds the Raft protocol itself. It is a pure state
-  machine. You hand it an event, such as a timer tick, an incoming
-  message, or a client proposal, and it hands back a list of actions
-  for you to carry out, such as sending a message, saving entries to
-  disk, or applying a committed command. It depends on nothing outside
-  the Rust standard library.
-- `simraft-kv` holds the key-value state machine. It turns committed
-  commands into reads and writes, remembers what each client already
-  asked for so a retried request never runs twice, and serves
-  linearizable reads, meaning a read is guaranteed to reflect every
-  write that finished before it started.
-- `simraft-sim` holds the deterministic simulator, the fault
-  injector, and the linearizability checker.
-- `simraft-wire` holds the message frame format that both the
-  simulator and the real adapter speak, so the bytes tested in
-  simulation are the bytes real nodes exchange.
-- `simraft-node` is the real adapter. It runs one core node as a
-  process, with files for storage and TCP for transport, and has
-  a client mode for putting, getting, and deleting keys against
-  a running cluster.
+| Crate | Kind | External runtime deps | Role |
+| --- | --- | --- | --- |
+| `simraft-core` | library | none (`std` only) | Pure sans-I/O Raft state machine (`Node::step`), Pre-Vote elections, fast log backup, Figure 8 commitment, `ReadIndex`, chunked snapshots, and single-server membership changes. |
+| `simraft-wire` | library | `crc32fast` | Canonical `"SRKV"` message frame, log entry, and cluster config codec with 16 MiB frame bounds and IEEE CRC-32 checksums. |
+| `simraft-kv` | library | none (`std` only) | Deterministic `BTreeMap` key-value state machine, bounded client session deduplication, and SHA-256 verified snapshot payloads. |
+| `simraft-node` | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, and linearizable `client` CLI (`put`, `get`, `delete`). |
+| `simraft-sim` | library and binary | `clap`, `crc32fast`, `sha2` | Single-threaded deterministic simulator, seeded `--chaos` fault injector, per-event safety oracles, and Wing and Gong linearizability checker. |
 
-## What works today
+## Quickstart with a three-node localhost cluster
 
-- Leader election with Pre-Vote, so a server that was cut off from
-  the group cannot force a needless new election when it comes back.
-- Log replication with fast conflict backup, so a follower whose log
-  disagrees with the leader catches up in a few round trips instead
-  of one entry at a time.
-- Commitment by replica counting that follows the Figure 8 rule from
-  the Raft paper, so an entry from an older leader is never treated
-  as final just because most servers hold a copy of it.
-- Linearizable reads through the ReadIndex protocol, with client
-  request deduplication on both sides of a commit, in flight and
-  after the fact. This part landed as
-  milestone M2.
-- Snapshots with chunked transfer, so a server that falls too far
-  behind receives the state it missed instead of replaying the
-  whole log, and one-at-a-time membership changes, so servers join
-  and leave without stopping the group. This part landed as
-  milestone M3.
-- A deterministic simulator that runs the whole system on a
-  virtual clock with dropped, duplicated, and reordered messages,
-  crashes, and clock jumps, checks five safety rules after every
-  event, and verifies the recorded client history for
-  linearizability at the end of every run. This part landed as
-  milestone M4, which completes the planned build.
+Start three `simraft-node` servers in separate terminals from the
+workspace root.
 
-## How it is used
+```sh
+cargo run -p simraft-node --release -- serve \
+  --id 1 --data-dir /tmp/srkv-1 \
+  --member 1@127.0.0.1:7001 \
+  --member 2@127.0.0.1:7002 \
+  --member 3@127.0.0.1:7003
 
-The protocol crates are libraries, and the core is driven like
-this.
+cargo run -p simraft-node --release -- serve \
+  --id 2 --data-dir /tmp/srkv-2 \
+  --member 1@127.0.0.1:7001 \
+  --member 2@127.0.0.1:7002 \
+  --member 3@127.0.0.1:7003
+
+cargo run -p simraft-node --release -- serve \
+  --id 3 --data-dir /tmp/srkv-3 \
+  --member 1@127.0.0.1:7001 \
+  --member 2@127.0.0.1:7002 \
+  --member 3@127.0.0.1:7003
+```
+
+Write, read, and delete keys against any member. The client follows
+leader hints automatically.
+
+```sh
+cargo run -p simraft-node --release -- client \
+  --server 127.0.0.1:7001 \
+  put greeting hello
+
+cargo run -p simraft-node --release -- client \
+  --server 127.0.0.1:7002 \
+  get greeting
+
+cargo run -p simraft-node --release -- client \
+  --server 127.0.0.1:7003 \
+  delete greeting
+```
+
+`put` and `delete` print `ok` to standard output and exit with code
+`0`. `get` writes the raw value bytes to standard output and exits
+with code `0` when the key exists, or writes
+`simraft-node: key not found` to standard error and exits with code
+`1` when the key is absent. Transport, timeout, or cluster errors
+exit with code `2`.
+
+## Embedding the sans-I/O core
+
+Callers that embed `simraft-core` directly own the network, disk,
+and clock while `Node::step` owns every consensus transition.
 
 ```rust
 let actions = node.step(event);
 for action in actions {
-    // Send the message, persist the entries, apply the command,
-    // or answer the client, as the action says.
+    // Send messages, persist durable state, apply committed entries,
+    // or complete client proposals and reads in action order.
 }
 ```
 
-Your code owns the network, the disk, and the clock. The core owns
-the decisions. That split is the whole design, and it is what makes
-the system replayable under test.
-
-The simulator is the one binary in the workspace. It runs a
-seeded cluster through chaos and healing phases and prints one
-summary line per seed.
+Run the self-contained single-file three-node embedding example with
+an in-memory transport.
 
 ```sh
-cargo run -p simraft-sim --release -- --seed 912 --seeds 1
+cargo run -p simraft-core --example embed
 ```
 
-The same seed in a separate process produces byte-identical
-output, so any failure a seed sweep finds replays exactly.
+## Deterministic simulation and verification
 
-## Running the tests
-
-The toolchain is pinned in `rust-toolchain.toml`. With Rust
-installed, the full check is
+Two binaries ship in the workspace (`simraft-node` for live clusters
+and `simraft-sim` for deterministic fault simulation). Run a seeded
+chaos sweep across asymmetric partitions, crashes, clock jumps, and
+wire bit-flip corruption, then replay any single seed byte for byte.
 
 ```sh
-cargo test --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo run -p simraft-sim --release -- --seed 0 --seeds 25 --chaos
+cargo run -p simraft-sim --release -- --seed 912 --seeds 1 --chaos --trace
 ```
 
-The property suites scale with the `PROPTEST_CASES` environment
-variable. Continuous integration runs 1,000 cases per pull request
-and 10,000 on the main branch.
+Run the full workspace verification gate on Rust `1.88` or newer
+(CI pins Rust `1.100.0` in `rust-toolchain.toml` and checks MSRV
+`1.88.0`).
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+PROPTEST_CASES=500 cargo test --workspace --all-features --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+cargo bench --workspace --locked -- --test
+```
+
+Property test suites scale through `PROPTEST_CASES` (1,000 cases per
+pull request and 10,000 on `main`), and chaos simulator sweeps run
+at matching seed counts in CI plus 100,000 seeds every week.
 
 ## Benchmarks
 
-Measured with the criterion benches in this repository, recorded
-from hosted runs on 2026-11-19. A full propose and commit round
+Measured with the Criterion benchmarks in this repository from
+recorded hosted runs on 2026-11-19. A full propose and commit round
 on a three-node cluster driven directly, one 32-byte entry per
 round, takes a median of 1.50 microseconds, about 668,000 rounds
 per second. A batch of 32 proposals released by one persist
-acknowledgement takes a median of 85.5 microseconds, about
-374,000 entries per second, where the same batch took 122
-microseconds before the release learned to coalesce its sends.
-A follower processing one AppendEntries message takes a median
-of 76 nanoseconds. A follower with an empty log catches up to a
-10,000-entry leader log in a median of 4.06 milliseconds. The
-linearizability checker decided a generated history of 100,000
-operations over 64 keys after visiting 100,000 states, one per
-operation, because the history is sequential per key. Reproduce
-with `cargo bench --workspace`.
+acknowledgment takes a median of 85.5 microseconds, about 374,000
+entries per second, down from 122 microseconds before leader send
+coalescing (`B-02`). A follower processing one `AppendEntries`
+message takes a median of 76 nanoseconds, and `step_allocations`
+verifies `Node::step` stays within 0 allocations on `Tick`, 2 on
+`RequestVote`, and 6 on a single-entry `AppendEntries` (`APPEND_BUDGET = 7`).
+A follower with an empty log catches up to a 10,000-entry leader log
+in a median of 4.06 milliseconds. The linearizability checker
+decides a generated history of 100,000 operations over 64 keys after
+visiting 100,000 states. Reproduce locally with
+`cargo bench --workspace`.
 
-## Where to read more
+## Documentation
 
-- `simraft-core/examples/embed.rs` is a worked embedding of the
-  core in one file: three nodes, an in-memory transport, one
-  write read back on every node. Run it with
-  `cargo run -p simraft-core --example embed`.
-- `docs/ARCHITECTURE.md` is the full design, written to be argued
-  with. It covers the protocol choices, the byte formats, the
-  simulator design, and the alternatives that were considered and
-  rejected.
-- `docs/INVARIANTS.md` lists every promised behavior and names the
-  test, oracle, or benchmark that enforces it.
-- `DECISIONS.md` records the founding choices for the project and
-  where each one came from.
-- `docs/ROADMAP.md` is the post-M4 plan: a real I/O adapter first,
-  then a ruder simulator, measured performance work, and
-  operability, in that order and for stated reasons.
+- `docs/ARCHITECTURE.md` specifies the protocol rules, byte schemas,
+  domain-separated digests, simulator model, and rejected
+  alternatives.
+- `docs/INVARIANTS.md` maps every formal invariant to its enforcing
+  property test, simulator oracle, scenario test, or benchmark.
+- `DECISIONS.md` records the workspace architectural decisions.
+- `docs/ROADMAP.md` records the completed milestone and post-M4
+  delivery lanes plus parked future extensions.
+- `SECURITY.md` documents the threat model, defensive bounds, and
+  vulnerability reporting policy.
 
 ## License
 

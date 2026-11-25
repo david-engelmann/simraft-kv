@@ -6,10 +6,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Seed volume per DECISIONS Q6: 1,000 seeds per PR, 10,000 seeds on main.
-# PROPTEST_CASES drives proptest case counts. SIM_SEED is the base seed for
-# simulator sweeps; each job derives per-seed values from its matrix index.
-
 permissions:
   contents: read
 
@@ -22,7 +18,7 @@ jobs:
     name: Docs and determinism guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: No em dashes or en dashes in public copy
         run: |
           python3 - <<'PY'
@@ -41,28 +37,19 @@ jobs:
               sys.exit(1)
           print("no em dashes or en dashes in markdown")
           PY
-      - name: DECISIONS.md present and locked
+      - name: Architectural decision and invariant docs present
         run: |
           test -f DECISIONS.md
           test -f docs/ARCHITECTURE.md
           test -f docs/INVARIANTS.md
-          grep -q "LOCKED by David 2026-11-12" DECISIONS.md
+          grep -q "^# Architectural Decisions" DECISIONS.md
       - name: Forbidden nondeterminism identifiers in deterministic crates
         run: |
-          # Crates live at the repo root (docs/ARCHITECTURE.md section 3):
-          # simraft-core/, simraft-kv/, simraft-sim/, root Cargo.toml.
-          # Arms at M1 when the workspace manifest exists. At M0 (docs only)
-          # it is a no-op. Comments are excluded; see docs/INVARIANTS.md D-02.
-          # A grep error (exit status above 1) fails this step outright.
-          if [ ! -f Cargo.toml ]; then
-            echo "M0 docs-only tree: determinism source guard arms at M1"
-            exit 0
-          fi
-          status=0
-          hits=$(grep -rnE "std::collections::(HashMap|HashSet)|SystemTime|Instant::now|thread_rng|OsRng" \
-            --include='*.rs' simraft-core simraft-kv simraft-sim) || status=$?
-          if [ "$status" -gt 1 ]; then
-            echo "determinism guard grep failed with status $status"
+          rc=0
+          hits=$(grep -rnE "\b(HashMap|HashSet|SystemTime|thread_rng|OsRng)\b|Instant::now" \
+            --include='*.rs' simraft-core simraft-kv simraft-wire simraft-sim) || rc=$?
+          if [ "$rc" -gt 1 ]; then
+            echo "determinism guard grep failed with status $rc"
             exit 1
           fi
           hits=$(printf '%s' "$hits" | grep -vE ":[[:space:]]*//" || true)
@@ -73,27 +60,98 @@ jobs:
           fi
           echo "no forbidden nondeterminism identifiers"
 
-  rust-gates:
-    name: Rust gates (fmt, clippy, doc, test, bench smoke)
-    runs-on: ubuntu-latest
+  rust-gates-matrix:
+    name: Rust gates (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.100.0"
           components: rustfmt, clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-rust-gates-1.100.0-${{ hashFiles('**/Cargo.lock') }}
       - name: Cargo gates
         run: |
-          if [ ! -f Cargo.toml ]; then
-            echo "M0 docs-only tree: no Cargo.toml yet, cargo gates arm at M1"
-            exit 0
-          fi
           cargo fmt --all -- --check
-          cargo clippy --workspace --all-targets --all-features -- -D warnings
-          cargo doc --workspace --no-deps
-          cargo test --workspace
-          cargo bench --workspace -- --test
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo doc --workspace --no-deps --locked
+          cargo test --workspace --all-features --locked
+          cargo bench --workspace --locked -- --test
+          cargo run -p simraft-core --example embed --locked
+
+  macos-gates:
+    name: Rust gates (macos-latest)
+    runs-on: macos-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install pinned toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.100.0"
+          components: rustfmt, clippy
+      - name: Cache Cargo registry and build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-rust-gates-1.100.0-${{ hashFiles('**/Cargo.lock') }}
+      - name: Cargo gates
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+          cargo doc --workspace --no-deps --locked
+          cargo test --workspace --all-features --locked
+          cargo bench --workspace --locked -- --test
+          cargo run -p simraft-core --example embed --locked
+
+  rust-gates:
+    name: Rust gates (fmt, clippy, doc, test, bench smoke)
+    needs: [rust-gates-matrix, msrv]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all OS and MSRV gates green
+        run: |
+          test "${{ needs.rust-gates-matrix.result }}" = "success"
+          test "${{ needs.msrv.result }}" = "success"
+
+  msrv:
+    name: MSRV 1.88 check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install MSRV toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.88.0"
+      - name: Cache MSRV build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-msrv-1.88.0-${{ hashFiles('**/Cargo.lock') }}
+      - name: Check workspace at MSRV 1.88
+        run: cargo check --workspace --all-targets --all-features --locked
 
   seed-sweep:
     name: Seed sweep (simulator and property volume)
@@ -102,30 +160,27 @@ jobs:
       PROPTEST_CASES: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
       SEED_COUNT: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install pinned toolchain
-        uses: dtolnay/rust-toolchain@master
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.100.0"
-          components: rustfmt, clippy
-      - name: Run seed sweep
+      - name: Cache sweep build artifacts
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-seed-sweep-1.100.0-${{ hashFiles('**/Cargo.lock') }}
+      - name: Run property volume and chaos seed sweep
         run: |
-          if [ ! -f Cargo.toml ]; then
-            echo "M0 docs-only tree: seed sweep arms at M4 when simraft-sim exists"
-            echo "Configured volume for this event: SEED_COUNT=$SEED_COUNT PROPTEST_CASES=$PROPTEST_CASES"
-            exit 0
-          fi
-          cargo test --workspace
-          # The sim binary arms the sweep at M4; before that simraft-sim
-          # is a library placeholder with no binary to run.
-          if [ -f simraft-sim/src/main.rs ]; then
-            cargo build -p simraft-sim --release
-            # One process per seed batch; each run prints its seed (D-03) and
-            # a final state digest (D-01). A nonzero exit fails the job.
-            step=100
-            for (( base=0; base<SEED_COUNT; base+=step )); do
-              SIM_SEED=$base ./target/release/simraft-sim \
-                --seed "$base" --seeds "$step" --json > "sweep-$base.json"
-              head -1 "sweep-$base.json"
-            done
-          fi
+          cargo test --workspace --all-features --locked
+          cargo build -p simraft-sim --release --locked
+          step=100
+          for (( base=0; base<SEED_COUNT; base+=step )); do
+            SIM_SEED=$base ./target/release/simraft-sim \
+              --seed "$base" --seeds "$step" --chaos --json > "sweep-$base.json"
+            head -1 "sweep-$base.json"
+          done

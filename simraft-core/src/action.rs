@@ -24,6 +24,12 @@ pub enum ClientResult {
         /// The known leader, if any.
         leader: Option<NodeId>,
     },
+    /// The proposal was rejected by a protocol rule (such as
+    /// `Config::max_uncommitted_entries`) without appending to the log.
+    Rejected {
+        /// The protocol error naming the deciding values.
+        error: ProtocolError,
+    },
 }
 
 /// The outcome of a membership change proposal, delivered

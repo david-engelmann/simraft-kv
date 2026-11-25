@@ -151,7 +151,8 @@ fn bench_readindex_cost(c: &mut Criterion) {
                     key: b"k".to_vec(),
                     value: b"v".to_vec(),
                 },
-            );
+            )
+            .expect("command encodes");
             let actions = nodes
                 .get_mut(&NodeId(1))
                 .expect("leader")

@@ -5,12 +5,17 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Key-value state machine for simraft-kv: deterministic apply, client session deduplication, and canonical command and snapshot payload encoding"
+documentation = "https://docs.rs/simraft-kv"
+readme = "README.md"
+description = "Deterministic replicated key-value state machine with client session deduplication and canonical command and snapshot codecs"
 keywords = ["raft", "key-value", "replication", "state-machine"]
 categories = ["algorithms", "database-implementations"]
 
 [dependencies]
-simraft-core = { path = "../simraft-core" }
+simraft-core = { version = "0.1.0", path = "../simraft-core" }
+
+[dev-dependencies]
+proptest = "1"
 
 [lints]
 workspace = true

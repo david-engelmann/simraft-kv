@@ -8,6 +8,7 @@
 )]
 mod common;
 
+use proptest::prelude::*;
 use simraft_core::{Event, LogIndex, Message, Node, NodeId, Term};
 
 fn leader_with_peers() -> Node {
@@ -96,4 +97,32 @@ fn stale_append_response_never_regresses_match_index() {
         },
     });
     assert_eq!(leader.progress(NodeId(2)), Some((LogIndex(6), LogIndex(5))));
+}
+
+proptest! {
+    #[test]
+    fn arbitrary_reordered_responses_keep_match_and_next_monotonic(
+        reported_matches in prop::collection::vec(0_u64..=5, 1..30),
+    ) {
+        let mut leader = leader_with_peers();
+        let term = leader.current_term();
+        let mut max_seen = 0_u64;
+        for m in reported_matches {
+            max_seen = max_seen.max(m);
+            let _ = leader.step(Event::Message {
+                from: NodeId(2),
+                msg: Message::AppendEntriesResponse {
+                    term,
+                    success: true,
+                    match_index: LogIndex(m),
+                    conflict_index: LogIndex::ZERO,
+                    conflict_term: Term::ZERO,
+                    read_round: 0,
+                },
+            });
+            let (next_idx, match_idx) = leader.progress(NodeId(2)).expect("peer tracked");
+            prop_assert_eq!(match_idx, LogIndex(max_seen), "S-07: match_index must track high-water mark");
+            prop_assert!(next_idx >= match_idx.next(), "S-07: next_index must never sit below match_index + 1");
+        }
+    }
 }

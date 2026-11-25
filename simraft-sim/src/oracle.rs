@@ -139,18 +139,17 @@ impl OracleState {
 fn election_safety(views: &[NodeView<'_>]) -> Result<(), OracleViolation> {
     let mut leaders: BTreeMap<Term, NodeId> = BTreeMap::new();
     for view in views {
-        if view.role == Role::Leader {
-            if let Some(other) = leaders.insert(view.current_term, view.id) {
-                if other != view.id {
-                    return Err(OracleViolation {
-                        oracle: "election_safety",
-                        detail: format!(
-                            "nodes {} and {} are both leader in {}",
-                            other, view.id, view.current_term
-                        ),
-                    });
-                }
-            }
+        if view.role == Role::Leader
+            && let Some(other) = leaders.insert(view.current_term, view.id)
+            && other != view.id
+        {
+            return Err(OracleViolation {
+                oracle: "election_safety",
+                detail: format!(
+                    "nodes {} and {} are both leader in {}",
+                    other, view.id, view.current_term
+                ),
+            });
         }
     }
     Ok(())
@@ -339,32 +338,32 @@ fn structural(views: &[NodeView<'_>], state: &mut OracleState) -> Result<(), Ora
                 ),
             });
         }
-        if let Some((prev_commit, prev_applied)) = state.indexes.get(&view.id) {
-            if view.commit_index < *prev_commit || view.last_applied < *prev_applied {
-                return Err(OracleViolation {
-                    oracle: "structural",
-                    detail: format!(
-                        "node {} indexes moved backwards: commit {} -> {}, applied {} -> {}",
-                        view.id, prev_commit, view.commit_index, prev_applied, view.last_applied
-                    ),
-                });
-            }
+        if let Some((prev_commit, prev_applied)) = state.indexes.get(&view.id)
+            && (view.commit_index < *prev_commit || view.last_applied < *prev_applied)
+        {
+            return Err(OracleViolation {
+                oracle: "structural",
+                detail: format!(
+                    "node {} indexes moved backwards: commit {} -> {}, applied {} -> {}",
+                    view.id, prev_commit, view.commit_index, prev_applied, view.last_applied
+                ),
+            });
         }
         state
             .indexes
             .insert(view.id, (view.commit_index, view.last_applied));
         for (peer, match_index) in view.match_indexes {
             let key = (view.id, view.current_term, *peer);
-            if let Some(prev) = state.matches.get(&key) {
-                if match_index < prev {
-                    return Err(OracleViolation {
-                        oracle: "structural",
-                        detail: format!(
-                            "leader {} match for {} decreased in {}: {} -> {}",
-                            view.id, peer, view.current_term, prev, match_index
-                        ),
-                    });
-                }
+            if let Some(prev) = state.matches.get(&key)
+                && match_index < prev
+            {
+                return Err(OracleViolation {
+                    oracle: "structural",
+                    detail: format!(
+                        "leader {} match for {} decreased in {}: {} -> {}",
+                        view.id, peer, view.current_term, prev, match_index
+                    ),
+                });
             }
             state.matches.insert(key, *match_index);
         }

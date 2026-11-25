@@ -1,60 +1,62 @@
 # Contributing to simraft-kv
 
-## Toolchain
+## Toolchain and MSRV
 
-The Rust toolchain is pinned in `rust-toolchain.toml` (see
-DECISIONS.md Q4). Everything below runs from the repository root.
+The CI verification toolchain is pinned in `rust-toolchain.toml` and
+the workspace supports Rust `1.88` and newer (`rust-version = "1.88"`
+in `Cargo.toml`). Run every command below from the workspace root.
 
-## The gates
+## Verification gates
 
-Run the full local gate before pushing:
+Run the full local gate before opening a pull request.
 
 ```sh
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
-cargo test --workspace
-cargo bench --workspace -- --test
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked
+PROPTEST_CASES=500 cargo test --workspace --all-features --locked
+cargo bench --workspace --locked -- --test
+cargo run -p simraft-core --example embed --locked
+cargo run -p simraft-sim --release --locked -- --seed 0 --seeds 25 --chaos
 ```
 
-Hosted CI runs the same gates on the pinned toolchain plus two
-guards: a docs guard (the public copy rules below) and a seed
-sweep at the DECISIONS Q6 volumes (1,000 seeds per pull request,
-10,000 on main).
+Hosted CI runs these gates on Linux and macOS, verifies MSRV `1.88`,
+checks public documentation rules and determinism guards, and runs
+property and chaos seed sweeps at 1,000 cases and seeds per pull
+request and 10,000 on `main`.
 
 ## Replaying a failing seed
 
-Every simulator run prints its seed on its first output line
-(invariant D-03). A failing seed from CI replays locally with
-that single value:
+Every simulator run prints its active seed on its first output line
+(`D-03`). Replay any seed locally in release mode with `--chaos` and
+`--trace` when inspecting a chaos sweep failure.
 
 ```sh
-cargo run -p simraft-sim --release -- --seed 4213 --seeds 1 --trace
+cargo run -p simraft-sim --release --locked -- --seed 4213 --seeds 1 --chaos --trace
 ```
 
-The same seed in a separate process produces byte-identical
-output (invariant D-01), so a replay that does not reproduce is
-itself a bug worth reporting. Property tests scale through the
-`PROPTEST_CASES` environment variable; a failing proptest case
-prints its own seed the same way.
+Running the same seed in a separate operating system process
+produces byte-identical traces and digests (`D-01`). Property test
+suites scale through `PROPTEST_CASES` and print failing seed values
+for direct deterministic replay.
 
 ## How changes land
 
-Work happens in milestones (docs/ARCHITECTURE.md section 16),
-each in two stages: Stage A lands the public contract and tests
-that fail against it; Stage B implements until they pass and
-syncs the docs to the code as built. Every invariant in
-docs/INVARIANTS.md names its enforcing test, oracle, or bench;
-when you add behavior, add or update the row in the same change,
-naming the test by the name it will actually have in the tree.
+Every promised behavior in `docs/ARCHITECTURE.md` has a row in
+`docs/INVARIANTS.md` naming the exact test, simulator oracle, or
+benchmark that enforces it in the repository tree. When adding or
+changing protocol, codec, or adapter behavior, add or update the
+corresponding invariant row and keep `docs/ARCHITECTURE.md`
+synchronized with the code as built.
 
-Commits carry a Signed-off-by trailer with the repository
-owner's identity.
+Commits carry a `Signed-off-by` trailer with the author's identity.
 
 ## Copy rules for public text
 
-READMEs and crate docs state what the software is, what it does,
-and how it is used. No em dashes or en dashes anywhere in public
-copy (the docs guard scans for them by codepoint). Numbers in the
-README come only from recorded benchmark runs of the benches in
-this repository, never from estimates.
+READMEs and documentation state clearly what the software is, what
+it does, and how to operate and verify it. Never place em dashes or
+en dashes anywhere in Markdown files (CI scans every `.md` file by
+codepoint). Keep prose sentences plain and direct without colons or
+semicolons outside code blocks, URLs, CLI commands, and Markdown
+tables. Benchmark figures in `README.md` come exclusively from
+recorded Criterion runs of the benchmarks in this repository.

@@ -1,12 +1,11 @@
 //! A-04 (docs/INVARIANTS.md section 10): the adapter's peer
-//! transport carries section 7.1 frames byte for byte. A frame
-//! produced by the shared simraft-wire codec, fed through the
-//! node's stream reassembly split at any byte boundary,
-//! decodes to exactly the message that was encoded.
+//! transport carries wire frames byte for byte, reassembling
+//! arbitrary splits while rejecting corrupt magic or oversized
+//! frame headers (> 16 MiB) immediately without buffering.
 
 use simraft_core::{EntryKind, LogEntry, LogIndex, Message, NodeId, Term};
 use simraft_node::runtime::FrameBuffer;
-use simraft_wire::encode_frame;
+use simraft_wire::{MAX_FRAME_BODY_LEN, WireError, encode_frame};
 
 #[test]
 fn frames_reassemble_at_any_split() {
@@ -25,7 +24,7 @@ fn frames_reassemble_at_any_split() {
         leader_commit: LogIndex(4),
         read_round: 0,
     };
-    let frame = encode_frame(NodeId(1), NodeId(2), &message);
+    let frame = encode_frame(NodeId(1), NodeId(2), &message).expect("frame encodes");
     for split in 0..=frame.len() {
         let mut buffer = FrameBuffer::new();
         buffer.push(&frame[..split]);
@@ -57,7 +56,8 @@ fn back_to_back_frames_come_out_in_order() {
             last_log_index: LogIndex(0),
             last_log_term: Term(0),
         },
-    );
+    )
+    .expect("first encodes");
     let second = encode_frame(
         NodeId(2),
         NodeId(1),
@@ -65,7 +65,8 @@ fn back_to_back_frames_come_out_in_order() {
             term: Term(1),
             vote_granted: true,
         },
-    );
+    )
+    .expect("second encodes");
     let mut buffer = FrameBuffer::new();
     let mut glued = first;
     glued.extend_from_slice(&second);
@@ -86,4 +87,41 @@ fn back_to_back_frames_come_out_in_order() {
             ..
         }
     ));
+}
+
+#[test]
+fn frame_buffer_rejects_bad_magic_and_four_gigabyte_header_immediately() {
+    let mut bad_magic = FrameBuffer::new();
+    bad_magic.push(b"NOPE");
+    assert!(matches!(
+        bad_magic.next_frame(),
+        Some(Err(WireError::BadMagic { .. }))
+    ));
+    assert!(bad_magic.is_empty());
+
+    let valid = encode_frame(
+        NodeId(1),
+        NodeId(2),
+        &Message::RequestVote {
+            term: Term(1),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::ZERO,
+        },
+    )
+    .expect("encodes");
+    let mut header_only = valid[..36].to_vec();
+    header_only[32..36].copy_from_slice(&u32::MAX.to_le_bytes());
+    let mut huge = FrameBuffer::new();
+    huge.push(&header_only);
+    assert!(
+        matches!(
+            huge.next_frame(),
+            Some(Err(WireError::PayloadTooLarge {
+                len: 0xFFFF_FFFF,
+                limit: MAX_FRAME_BODY_LEN,
+            }))
+        ),
+        "FrameBuffer must reject a 4 GiB body_len immediately from the 36-byte header"
+    );
+    assert!(huge.is_empty());
 }

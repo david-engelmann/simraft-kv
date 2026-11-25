@@ -2,9 +2,8 @@
 //!
 //! The core never serializes. The canonical byte layout for these
 //! messages is specified in docs/ARCHITECTURE.md section 7.1 and is
-//! implemented by the simulator's packet layer and by future adapters.
-//! Message kinds are added per milestone: voting and `AppendEntries` at
-//! M1, `InstallSnapshot` at M3.
+//! implemented by `simraft-wire` for both the simulator and the node
+//! adapter.
 
 use crate::ids::{LogIndex, Term};
 use crate::log::LogEntry;
@@ -66,8 +65,7 @@ pub enum Message {
         entries: Vec<LogEntry>,
         /// The leader's commit index.
         leader_commit: LogIndex,
-        /// The leader's current `ReadIndex` round token (0 means none;
-        /// `ReadIndex` activates at M2).
+        /// The leader's current `ReadIndex` round token (0 means none).
         read_round: u64,
     },
     /// The follower's answer to `AppendEntries`.
@@ -86,7 +84,7 @@ pub enum Message {
         /// On failure, the term at `conflict_index` in the follower's
         /// log, or term 0 when the log was simply too short.
         conflict_term: Term,
-        /// The highest read round echoed by the follower (`ReadIndex`, M2).
+        /// The highest read round echoed by the follower (`ReadIndex`).
         read_round: u64,
     },
     /// One chunk of a snapshot transfer (docs/ARCHITECTURE.md section

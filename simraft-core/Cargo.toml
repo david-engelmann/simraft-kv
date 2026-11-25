@@ -5,7 +5,9 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 repository.workspace = true
-description = "Sans-I/O Raft consensus core for simraft-kv: a pure deterministic state machine with Pre-Vote, fast log backup, and persist-before-response ordering"
+documentation = "https://docs.rs/simraft-core"
+readme = "README.md"
+description = "Sans-I/O Raft consensus core with Pre-Vote, fast log backup, ReadIndex, snapshots, and single-server membership"
 keywords = ["raft", "consensus", "replication", "sans-io", "deterministic"]
 categories = ["algorithms"]
 
