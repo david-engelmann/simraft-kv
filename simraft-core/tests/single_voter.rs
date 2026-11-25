@@ -103,12 +103,15 @@ fn drive_cluster(node: &mut Node, actions: Vec<Action>) {
             }
             Action::Send { to, msg } => {
                 let reply = match &msg {
-                    Message::RequestPreVote { term, .. } => Some(
-                        Message::RequestPreVoteResponse {
-                            term: *term,
-                            vote_granted: true,
-                        },
-                    ),
+                    // A prevote is answered with the voter's own
+                    // current term, never the hypothetical term
+                    // the candidate is testing: echoing that term
+                    // would read as a higher-term discovery and
+                    // step the candidate down.
+                    Message::RequestPreVote { .. } => Some(Message::RequestPreVoteResponse {
+                        term: node.current_term(),
+                        vote_granted: true,
+                    }),
                     Message::RequestVote { term, .. } => Some(Message::RequestVoteResponse {
                         term: *term,
                         vote_granted: true,
@@ -132,7 +135,10 @@ fn drive_cluster(node: &mut Node, actions: Vec<Action>) {
                     _ => None,
                 };
                 if let Some(reply) = reply {
-                    queue.extend(node.step(Event::Message { from: to, msg: reply }));
+                    queue.extend(node.step(Event::Message {
+                        from: to,
+                        msg: reply,
+                    }));
                 }
             }
             _ => {}
