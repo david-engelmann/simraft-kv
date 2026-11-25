@@ -50,9 +50,18 @@ fn allocations_around(f: impl FnOnce()) -> usize {
 }
 
 /// The recorded per-class budgets (allocations per step).
-const TICK_BUDGET: usize = 16;
-const VOTE_BUDGET: usize = 16;
-const APPEND_BUDGET: usize = 32;
+///
+/// Tightened on 2026-11-24 (the L-03 register item deferred
+/// by Lane 3 until the values held for a full release cycle).
+/// Full criterion runs on main at 5d3c9cc1 measured single-shot
+/// counts of tick 0, vote 2, append 10 and loop maxima of
+/// tick 2, vote 2, append 10, matching the Lane 3 values from
+/// 2026-11-20 exactly. The budgets sit at the loop maxima
+/// plus a small margin, so a new allocation habit in a step
+/// path fails the bench instead of slipping through.
+const TICK_BUDGET: usize = 4;
+const VOTE_BUDGET: usize = 4;
+const APPEND_BUDGET: usize = 16;
 
 fn node(id: u64) -> Node {
     let cfg = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
