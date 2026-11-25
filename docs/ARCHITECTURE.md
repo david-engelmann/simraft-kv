@@ -1,6 +1,6 @@
 # simraft-kv Architecture
 
-This document specifies the as-built `v0.1.0` architecture across all
+This document specifies the as-built `v0.2.0` architecture across all
 five crates in the `simraft-kv` workspace. Any change to protocol
 contracts or byte formats requires updating `DECISIONS.md`, this
 specification, and the corresponding verification rows in

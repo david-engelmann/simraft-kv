@@ -1,7 +1,7 @@
 # simraft-kv Invariants and Traceability Matrix
 
 This document is the normative list of formal invariants for
-`simraft-kv` at `v0.1.0` across all five workspace crates
+`simraft-kv` at `v0.2.0` across all five workspace crates
 (`simraft-core`, `simraft-wire`, `simraft-kv`, `simraft-node`, and
 `simraft-sim`). Every invariant occupies one row and names the exact
 property test, simulator oracle, scenario test, tamper test, or

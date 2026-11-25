@@ -4,11 +4,13 @@ All notable changes to the `simraft-kv` workspace are documented in
 this file. The format follows Keep a Changelog and this project
 adheres to Semantic Versioning.
 
-## [0.1.0] - 2026-11-25
+## [0.2.0] - 2026-11-25
 
-Initial public release of all five workspace crates at version
-`0.1.0` (`simraft-core`, `simraft-wire`, `simraft-kv`,
-`simraft-node`, and `simraft-sim`).
+Full workspace release of all five crates at version `0.2.0`
+(`simraft-core`, `simraft-wire`, `simraft-kv`, `simraft-node`, and
+`simraft-sim`), advancing past the initial `simraft-core` `0.1.0`
+registry publication so the entire workspace ships under a unified
+version.
 
 ### Added
 
@@ -47,5 +49,12 @@ Initial public release of all five workspace crates at version
   and per-key Wing and Gong linearizability verification.
 - Public documentation index (`docs/README.md`), per-crate `README.md`
   files, light and dark SVG lockups and architecture and baseline
-  diagrams, a `1200x630` social card, and a real-output
-  `docs/media/money-shot.gif` walkthrough.
+  diagrams, a `1200x630` social card, a real-output
+  `docs/media/money-shot.gif` walkthrough, a typed Python SDK and
+  precompiled `simraft-kv` PyPI wheels (`pyproject.toml`,
+  `python/simraft_kv`), and GitHub Actions OIDC release automation for
+  crates.io, PyPI, and five-platform GitHub Releases.
+
+## [0.1.0] - 2026-11-17
+
+Initial crates.io publication of `simraft-core` `0.1.0`.
