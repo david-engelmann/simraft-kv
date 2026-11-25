@@ -536,7 +536,7 @@ impl Node {
         // follower responses to wait for; without this, its
         // leader appends and persists but never commits.
         if self.role == Role::Leader {
-            self.advance_commit(out);
+            self.advance_commit_with_self(self.entries_durable_up_to, out);
         }
     }
 
@@ -1266,6 +1266,16 @@ impl Node {
     /// for an entry from the leader's current term (the Figure 8 rule,
     /// invariant S-06), then propagate applies and the new commit.
     fn advance_commit(&mut self, out: &mut Vec<Action>) {
+        self.advance_commit_with_self(self.log.last_index(), out);
+    }
+
+    /// Commit advancement with the leader's own replica
+    /// counted at `self_index`. The response paths count it
+    /// at the log's tail, as they always have; the
+    /// persist-ack path counts it at the durable bound, so
+    /// an entry the leader has not yet persisted is never
+    /// the vote that commits it (R-06).
+    fn advance_commit_with_self(&mut self, self_index: LogIndex, out: &mut Vec<Action>) {
         let mut held: Vec<u64> = self
             .config_state
             .latest
@@ -1273,11 +1283,7 @@ impl Node {
             .iter()
             .map(|&v| {
                 if v == self.id {
-                    // The leader counts its own replica at its
-                    // durable bound, never at the log's tail:
-                    // an entry it has not persisted is not yet
-                    // a vote for commitment.
-                    self.entries_durable_up_to.0
+                    self_index.0
                 } else {
                     self.progress.get(&v).map_or(0, |p| p.match_index.0)
                 }
