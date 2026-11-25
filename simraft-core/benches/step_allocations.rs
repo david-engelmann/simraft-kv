@@ -59,9 +59,19 @@ fn allocations_around(f: impl FnOnce()) -> usize {
 /// 2026-11-20 exactly. The budgets sit at the loop maxima
 /// plus a small margin, so a new allocation habit in a step
 /// path fails the bench instead of slipping through.
+///
+/// The append budget is a Stage A target of the R-5
+/// reduction lane, not a recorded bound: the measured count
+/// of 10 includes two allocations of bench overhead (the
+/// harness cloned the message inside the measured region,
+/// now hoisted out), and the core's apply path clones each
+/// applied entry twice. Seven is the count with the bench
+/// overhead removed and the duplicate clone eliminated;
+/// Stage B lands that reduction and resets this budget from
+/// the new measured loop maxima plus margin.
 const TICK_BUDGET: usize = 4;
 const VOTE_BUDGET: usize = 4;
-const APPEND_BUDGET: usize = 16;
+const APPEND_BUDGET: usize = 7;
 
 fn node(id: u64) -> Node {
     let cfg = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
@@ -149,10 +159,11 @@ fn report_measured_counts() {
         .expect("the leader sends AppendEntries");
     let mut follower = node(2);
     follower.step(Event::Tick { now: 500 });
+    let measured = message.clone();
     let append_count = allocations_around(|| {
         follower.step(Event::Message {
             from: NodeId(1),
-            msg: message.clone(),
+            msg: measured,
         });
     });
     println!(
@@ -227,10 +238,11 @@ fn bench_step_allocations(c: &mut Criterion) {
             // Bring the follower to the leader's term first (the
             // vote above is not part of the measurement).
             follower.step(Event::Tick { now: 500 });
+            let measured = message.clone();
             let count = allocations_around(|| {
                 black_box(follower.step(Event::Message {
                     from: NodeId(1),
-                    msg: message.clone(),
+                    msg: measured,
                 }));
             });
             assert!(
