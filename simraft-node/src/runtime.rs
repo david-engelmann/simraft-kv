@@ -755,9 +755,8 @@ mod tests {
             std::env::temp_dir().join(format!("simraft-node-fence-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (store, recovery) = FileStore::open(&dir).expect("store opens");
-        let cluster =
-            ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
-                .expect("cluster validates");
+        let cluster = ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+            .expect("cluster validates");
         let config = Config {
             heartbeat_interval: 5,
             min_election_timeout: 50,
@@ -794,20 +793,22 @@ mod tests {
             .step(Event::Tick { now: 1_000_000 })
             .expect("election tick steps");
         pump(&mut driver, &inbox);
+        let term = driver.node.current_term();
         peer(
             &mut driver,
             NodeId(2),
             Message::RequestPreVoteResponse {
-                term: driver.node.current_term(),
+                term,
                 vote_granted: true,
             },
         );
         pump(&mut driver, &inbox);
+        let term = driver.node.current_term();
         peer(
             &mut driver,
             NodeId(2),
             Message::RequestVoteResponse {
-                term: driver.node.current_term(),
+                term,
                 vote_granted: true,
             },
         );
@@ -834,13 +835,15 @@ mod tests {
                 })
                 .expect("proposal steps");
         }
+        let term = driver.node.current_term();
+        let last = driver.node.log().last_index();
         peer(
             &mut driver,
             NodeId(2),
             Message::AppendEntriesResponse {
-                term: driver.node.current_term(),
+                term,
                 success: true,
-                match_index: driver.node.log().last_index(),
+                match_index: last,
                 conflict_index: LogIndex::ZERO,
                 conflict_term: Term::ZERO,
                 read_round: 0,
