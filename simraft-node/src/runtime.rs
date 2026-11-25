@@ -719,7 +719,21 @@ fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: Sender<Inbox>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simraft_core::ClusterConfig;
+    use simraft_core::{ClusterConfig, Role};
+
+    /// Deliver any frames the driver addressed to itself back
+    /// into it as messages. In a one-node cluster the core's
+    /// pre-vote and vote requests are sends to its own id, and
+    /// no peer thread exists to carry them, so without this
+    /// loop the node can never finish electing itself.
+    fn pump(driver: &mut Driver, inbox: &Receiver<Vec<u8>>) {
+        while let Ok(frame) = inbox.try_recv() {
+            let (from, _to, msg) = decode_frame(&frame).expect("self frame decodes");
+            driver
+                .step(Event::Message { from, msg })
+                .expect("self message steps");
+        }
+    }
 
     /// Build a single-node driver in a fresh store directory
     /// and drive it to leader with a handful of applied puts,
@@ -739,13 +753,14 @@ mod tests {
         };
         let node =
             Node::new(NodeId(1), config, cluster, 0x9E37_79B9_7F4A_7C15 + 1).expect("node builds");
+        let (sender, inbox) = channel::<Vec<u8>>();
         let mut driver = Driver {
             id: NodeId(1),
             node,
             machine: KvStateMachine::new(SESSION_CAPACITY),
             store,
             members: BTreeMap::new(),
-            senders: BTreeMap::new(),
+            senders: BTreeMap::from([(NodeId(1), sender)]),
             pending_writes: BTreeMap::new(),
             committed: BTreeSet::new(),
             outcomes: BTreeMap::new(),
@@ -765,6 +780,17 @@ mod tests {
         driver
             .step(Event::Tick { now: 1_000_000 })
             .expect("election tick steps");
+        for _ in 0..8 {
+            if driver.node.role() == Role::Leader {
+                break;
+            }
+            pump(&mut driver, &inbox);
+        }
+        assert_eq!(
+            driver.node.role(),
+            Role::Leader,
+            "the one-node cluster must elect its only member"
+        );
         for seq in 1..=4_u64 {
             let payload = encode_command(
                 ClientId(7),
