@@ -719,13 +719,12 @@ fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: Sender<Inbox>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use simraft_core::{ClusterConfig, Role};
+    use simraft_core::{ClusterConfig, Role, Term};
 
     /// Deliver any frames the driver addressed to itself back
-    /// into it as messages. In a one-node cluster the core's
-    /// pre-vote and vote requests are sends to its own id, and
-    /// no peer thread exists to carry them, so without this
-    /// loop the node can never finish electing itself.
+    /// into it as messages. The core's sends to its own id
+    /// (its pre-vote and vote in an election it runs) have no
+    /// peer thread to carry them in this harness.
     fn pump(driver: &mut Driver, inbox: &Receiver<Vec<u8>>) {
         while let Ok(frame) = inbox.try_recv() {
             let (from, _to, msg) = decode_frame(&frame).expect("self frame decodes");
@@ -735,16 +734,30 @@ mod tests {
         }
     }
 
-    /// Build a single-node driver in a fresh store directory
-    /// and drive it to leader with a handful of applied puts,
-    /// so its machine stands past the first log indexes with
-    /// no snapshot in the store.
+    /// Step one scripted peer message into the driver.
+    fn peer(driver: &mut Driver, from: NodeId, msg: Message) {
+        driver
+            .step(Event::Message { from, msg })
+            .expect("peer message steps");
+    }
+
+    /// Build a driver for the leader of a three-voter cluster
+    /// in a fresh store directory and drive it through an
+    /// election and a handful of applied puts, so its machine
+    /// stands past the first log indexes with no snapshot in
+    /// the store. The two peers are scripted responses, not
+    /// drivers: their pre-vote, vote, and append responses are
+    /// what the core's commit rule counts, so the leader's
+    /// applies arrive through the same path as a live
+    /// cluster's.
     fn applied_driver() -> (Driver, PathBuf) {
         let dir =
             std::env::temp_dir().join(format!("simraft-node-fence-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let (store, recovery) = FileStore::open(&dir).expect("store opens");
-        let cluster = ClusterConfig::new([NodeId(1)], Vec::new()).expect("cluster validates");
+        let cluster =
+            ClusterConfig::new([NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+                .expect("cluster validates");
         let config = Config {
             heartbeat_interval: 5,
             min_election_timeout: 50,
@@ -780,16 +793,29 @@ mod tests {
         driver
             .step(Event::Tick { now: 1_000_000 })
             .expect("election tick steps");
-        for _ in 0..8 {
-            if driver.node.role() == Role::Leader {
-                break;
-            }
-            pump(&mut driver, &inbox);
-        }
+        pump(&mut driver, &inbox);
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::RequestPreVoteResponse {
+                term: driver.node.current_term(),
+                vote_granted: true,
+            },
+        );
+        pump(&mut driver, &inbox);
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::RequestVoteResponse {
+                term: driver.node.current_term(),
+                vote_granted: true,
+            },
+        );
+        pump(&mut driver, &inbox);
         assert_eq!(
             driver.node.role(),
             Role::Leader,
-            "the one-node cluster must elect its only member"
+            "the scripted election must seat the leader"
         );
         for seq in 1..=4_u64 {
             let payload = encode_command(
@@ -808,6 +834,18 @@ mod tests {
                 })
                 .expect("proposal steps");
         }
+        peer(
+            &mut driver,
+            NodeId(2),
+            Message::AppendEntriesResponse {
+                term: driver.node.current_term(),
+                success: true,
+                match_index: driver.node.log().last_index(),
+                conflict_index: LogIndex::ZERO,
+                conflict_term: Term::ZERO,
+                read_round: 0,
+            },
+        );
         (driver, dir)
     }
 
