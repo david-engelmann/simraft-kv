@@ -617,27 +617,33 @@ impl Node {
     /// no config entry above the base (invariant M-05's single source
     /// of truth).
     fn recompute_config(&mut self) {
-        let mut latest = self.base_config.clone();
-        let mut committed = self.base_config.clone();
-        let mut last_config_index = if self.log.base_index() > LogIndex::ZERO {
-            self.log.base_index()
-        } else {
-            LogIndex::ZERO
-        };
+        // Scan by reference first (R-5): when the scan's
+        // result equals the current state, which is the
+        // common case on the append path, the rebuild and
+        // its configuration clones are skipped entirely.
+        let mut latest: &ClusterConfig = &self.base_config;
+        let mut committed: &ClusterConfig = &self.base_config;
+        let mut last_config_index = self.log.base_index();
         let base = self.log.base_index().0;
         for (offset, entry) in self.log.entries().iter().enumerate() {
             if let EntryKind::Config { config } = &entry.kind {
                 let index = LogIndex(base + 1 + offset as u64);
-                latest = config.clone();
+                latest = config;
                 last_config_index = index;
                 if index <= self.commit_index {
-                    committed = config.clone();
+                    committed = config;
                 }
             }
         }
+        if self.config_state.latest == *latest
+            && self.config_state.committed == *committed
+            && self.config_state.last_config_index == last_config_index
+        {
+            return;
+        }
         self.config_state = ConfigState {
-            latest,
-            committed,
+            latest: latest.clone(),
+            committed: committed.clone(),
             last_config_index,
         };
     }
