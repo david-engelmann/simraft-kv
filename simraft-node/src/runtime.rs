@@ -707,3 +707,116 @@ fn peer_reader(mut stream: TcpStream, seed: Vec<u8>, inbox: Sender<Inbox>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use simraft_core::ClusterConfig;
+
+    /// Build a single-node driver in a fresh store directory
+    /// and drive it to leader with a handful of applied puts,
+    /// so its machine stands past the first log indexes with
+    /// no snapshot in the store.
+    fn applied_driver() -> (Driver, PathBuf) {
+        let dir = std::env::temp_dir().join(format!(
+            "simraft-node-fence-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (store, _recovery) = FileStore::open(&dir).expect("store opens");
+        let cluster = ClusterConfig::new([NodeId(1)], Vec::new()).expect("cluster validates");
+        let node = Node::new(NodeId(1), Config::default(), cluster, 7).expect("node builds");
+        let mut driver = Driver {
+            id: NodeId(1),
+            node,
+            machine: KvStateMachine::new(SESSION_CAPACITY),
+            store,
+            members: BTreeMap::new(),
+            senders: BTreeMap::new(),
+            pending_writes: BTreeMap::new(),
+            committed: BTreeSet::new(),
+            outcomes: BTreeMap::new(),
+            pending_reads: BTreeMap::new(),
+            deferred_reads: Vec::new(),
+            next_request_id: 1,
+            tick: 0,
+            pending_compaction: None,
+        };
+        driver
+            .step(Event::Tick { now: 1_000_000 })
+            .expect("election tick steps");
+        for seq in 1..=4_u64 {
+            let payload = encode_command(
+                ClientId(7),
+                seq,
+                &KvOp::Put {
+                    key: format!("key-{seq}").into_bytes(),
+                    value: format!("value-{seq}").into_bytes(),
+                },
+            );
+            driver
+                .step(Event::Propose {
+                    client_id: ClientId(7),
+                    seq,
+                    payload,
+                })
+                .expect("proposal steps");
+        }
+        (driver, dir)
+    }
+
+    /// Invariant A-06: a rebuilt snapshot payload is served
+    /// only for the boundary the machine is standing on. A
+    /// request for an earlier boundary the machine has already
+    /// applied past must get no payload, never the machine's
+    /// later state relabeled with the earlier index, because a
+    /// follower installing that payload would diverge from
+    /// the log it is about to replay.
+    #[test]
+    fn snapshot_rebuild_never_serves_later_state_under_an_earlier_boundary() {
+        let (driver, dir) = applied_driver();
+        let applied = driver.node.last_applied();
+        assert!(
+            applied.0 >= 3,
+            "the driver must stand past an earlier boundary, applied {applied}"
+        );
+        assert!(
+            driver
+                .store
+                .read_snapshot()
+                .expect("store reads")
+                .is_none(),
+            "the test exercises the rebuild path, so the store holds no snapshot"
+        );
+        let cluster = driver.node.cluster().clone();
+        let earlier = LogIndex(applied.0 - 2);
+        let earlier_meta = SnapshotMeta {
+            last_included_index: earlier,
+            last_included_term: driver
+                .node
+                .log()
+                .term_at(earlier)
+                .expect("the earlier index has a term"),
+            config: cluster.clone(),
+        };
+        assert!(
+            driver.snapshot_bytes(&earlier_meta).is_none(),
+            "no payload may be served for a boundary the machine has applied past"
+        );
+        let exact_meta = SnapshotMeta {
+            last_included_index: applied,
+            last_included_term: driver
+                .node
+                .log()
+                .term_at(applied)
+                .expect("the applied index has a term"),
+            config: cluster,
+        };
+        let bytes = driver
+            .snapshot_bytes(&exact_meta)
+            .expect("the boundary the machine stands on is served");
+        let parts = decode_snapshot(&bytes).expect("the served payload decodes");
+        assert_eq!(parts.last_included_index, applied);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
