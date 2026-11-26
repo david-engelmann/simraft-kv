@@ -28,7 +28,7 @@ crc32fast = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [[bench]]
 name = "readindex_cost"
