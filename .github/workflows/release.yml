@@ -43,7 +43,7 @@ jobs:
             ext: ".exe"
             archive: zip
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -107,7 +107,7 @@ jobs:
     needs: build-archives
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Download all target archives
         uses: actions/download-artifact@v8
         with:
