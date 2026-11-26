@@ -18,7 +18,7 @@ jobs:
     name: Docs and determinism guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: No em dashes or en dashes in public copy
         run: |
           python3 - <<'PY'
@@ -68,7 +68,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -91,10 +91,11 @@ jobs:
           cargo test --workspace --all-features --locked
           cargo bench --workspace --locked -- --test
           cargo run -p simraft-core --example embed --locked
-      - name: Build simulator CLI and run Python SDK tests
+      - name: Build simulator and node CLIs and run Python SDK tests
         shell: bash
         run: |
           cargo build --locked -p simraft-sim --bin simraft-sim
+          cargo build --locked -p simraft-node --bin simraft-node
           python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
 
   macos-gates:
@@ -102,7 +103,7 @@ jobs:
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -125,10 +126,11 @@ jobs:
           cargo test --workspace --all-features --locked
           cargo bench --workspace --locked -- --test
           cargo run -p simraft-core --example embed --locked
-      - name: Build simulator CLI and run Python SDK tests
+      - name: Build simulator and node CLIs and run Python SDK tests
         shell: bash
         run: |
           cargo build --locked -p simraft-sim --bin simraft-sim
+          cargo build --locked -p simraft-node --bin simraft-node
           python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
 
   rust-gates:
@@ -146,7 +148,7 @@ jobs:
     name: MSRV 1.88 check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install MSRV toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -170,7 +172,7 @@ jobs:
       PROPTEST_CASES: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
       SEED_COUNT: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:

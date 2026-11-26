@@ -1,6 +1,6 @@
 [package]
 name = "simraft-kv"
-version = "0.2.0"
+version = "0.2.1"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -12,7 +12,7 @@ keywords = ["raft", "key-value", "replication", "state-machine"]
 categories = ["algorithms", "database-implementations"]
 
 [dependencies]
-simraft-core = { version = "0.2.0", path = "../simraft-core" }
+simraft-core = { version = "0.2.1", path = "../simraft-core" }
 
 [dev-dependencies]
 proptest = "1"

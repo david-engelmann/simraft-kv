@@ -1,0 +1,189 @@
+name: Verify published packages
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "29 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  scratch-project:
+    name: Crates.io library smoke (0.2.1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install pinned toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.100.0"
+      - name: Build and run scratch crate against crates.io 0.2.1
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/simraft-scratch"
+          rm -rf "$scratch"
+          cargo new --bin "$scratch"
+          cd "$scratch"
+          cargo add simraft-core@=0.2.1 simraft-kv@=0.2.1 simraft-wire@=0.2.1
+          cat > src/main.rs <<'RS'
+          use std::collections::VecDeque;
+
+          use simraft_core::{
+              Action, ClientId, ClusterConfig, Config, Event, LogIndex, Message, Node, NodeId,
+              PersistKind, Role, Term,
+          };
+          use simraft_kv::{KvOp, KvStateMachine, encode_command};
+          use simraft_wire::{decode_frame, encode_frame};
+
+          fn main() {
+              let msg = Message::RequestVote {
+                  term: Term(1),
+                  last_log_index: LogIndex::ZERO,
+                  last_log_term: Term::ZERO,
+              };
+              let frame = encode_frame(NodeId(1), NodeId(2), &msg).expect("frame encodes");
+              assert_eq!(&frame[..4], b"SRKV");
+              let (from, to, decoded) = decode_frame(&frame).expect("frame decodes");
+              assert_eq!((from, to, decoded), (NodeId(1), NodeId(2), msg));
+
+              let cfg = ClusterConfig::new([NodeId(1)], Vec::new()).expect("config validates");
+              let mut node = Node::new(NodeId(1), Config::default(), cfg, 7).expect("node builds");
+              let mut machine = KvStateMachine::default();
+              let mut queue = VecDeque::new();
+
+              let mut now = 0_u64;
+              while node.stats().role != Role::Leader {
+                  now += 100;
+                  assert!(now < 10_000, "single voter elects itself");
+                  queue.push_back(Event::Tick { now });
+                  while let Some(ev) = queue.pop_front() {
+                      for action in node.step(ev) {
+                          match action {
+                              Action::PersistHardState { .. } => queue.push_back(Event::Persisted {
+                                  kind: PersistKind::HardState,
+                                  up_to_index: LogIndex::ZERO,
+                              }),
+                              Action::PersistEntries { .. } => queue.push_back(Event::Persisted {
+                                  kind: PersistKind::Entries,
+                                  up_to_index: node.log().last_index(),
+                              }),
+                              Action::Apply { index, entry } => {
+                                  machine.apply(index, &entry).expect("entry applies");
+                              }
+                              _ => {}
+                          }
+                      }
+                  }
+              }
+
+              let payload = encode_command(
+                  ClientId(1),
+                  1,
+                  &KvOp::Put {
+                      key: b"smoke".to_vec(),
+                      value: b"ok".to_vec(),
+                  },
+              )
+              .expect("command encodes");
+              queue.push_back(Event::Propose {
+                  client_id: ClientId(1),
+                  seq: 1,
+                  payload,
+              });
+              while let Some(ev) = queue.pop_front() {
+                  for action in node.step(ev) {
+                      match action {
+                          Action::PersistHardState { .. } => queue.push_back(Event::Persisted {
+                              kind: PersistKind::HardState,
+                              up_to_index: LogIndex::ZERO,
+                          }),
+                          Action::PersistEntries { .. } => queue.push_back(Event::Persisted {
+                              kind: PersistKind::Entries,
+                              up_to_index: node.log().last_index(),
+                          }),
+                          Action::Apply { index, entry } => {
+                              machine.apply(index, &entry).expect("entry applies");
+                          }
+                          _ => {}
+                      }
+                  }
+              }
+
+              assert_eq!(
+                  machine.read(node.stats().commit_index, b"smoke"),
+                  Some(Some(&b"ok"[..]))
+              );
+              println!("scratch-project ok: SRKV frame round-tripped and single-voter applied smoke=ok");
+          }
+          RS
+          cargo run --release
+
+  install-cli:
+    name: Crates.io CLI install (0.2.1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install pinned toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v2
+        with:
+          toolchain: "1.100.0"
+      - name: Install simraft-sim and simraft-node 0.2.1 and run chaos smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          install_root="$RUNNER_TEMP/simraft-install"
+          rm -rf "$install_root"
+          cargo install simraft-sim simraft-node --version 0.2.1 --locked --root "$install_root"
+          "$install_root/bin/simraft-sim" --version | grep -F "0.2.1"
+          "$install_root/bin/simraft-node" --version | grep -F "0.2.1"
+          out="$("$install_root/bin/simraft-sim" --seed 912 --seeds 1 --chaos --json)"
+          echo "$out"
+          python3 -c 'import json, sys; d = json.loads(sys.argv[1]); assert d["passed"] is True and d["verdict"] == "linearizable", d' "$out"
+
+  install-pypi:
+    name: PyPI install and SDK smoke (0.2.1)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install simraft-kv==0.2.1 from PyPI and verify SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          venv="$RUNNER_TEMP/simraft-pypi-venv"
+          rm -rf "$venv"
+          python -m venv "$venv"
+          "$venv/bin/python" -m pip install --upgrade pip
+          "$venv/bin/python" -m pip install "simraft-kv==0.2.1"
+          "$venv/bin/python" - <<'PY'
+          import struct
+          import simraft_kv
+
+          assert simraft_kv.__version__ == "0.2.1", simraft_kv.__version__
+          assert simraft_kv.version() == "0.2.1"
+
+          summary = simraft_kv.simulate(seed=912, seeds=2, chaos=True)
+          assert summary.all_passed, summary
+          assert len(summary.runs) == 2
+
+          req = simraft_kv.encode_client_request(7, 1, "put", "greeting", "hello")
+          body_len = struct.unpack_from("<I", req, 0)[0]
+          assert body_len == len(req) - 4
+          assert req[4:8] == b"SRCL"
+
+          ok_body = b"SRCL" + struct.pack("<HBBI", 1, 0, 1, 5) + b"hello"
+          reply = simraft_kv.decode_client_response(ok_body)
+          assert reply.status == "ok"
+          assert reply.value == b"hello"
+
+          redir_body = b"SRCL" + struct.pack("<HBBI", 1, 1, 0, 14) + b"127.0.0.1:7002"
+          redir = simraft_kv.decode_client_response(redir_body)
+          assert redir.status == "redirect"
+          assert redir.leader_hint == "127.0.0.1:7002"
+          print("install-pypi ok: simraft-kv==0.2.1 verified")
+          PY

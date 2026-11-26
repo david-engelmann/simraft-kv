@@ -43,7 +43,7 @@ jobs:
             ext: ".exe"
             archive: zip
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -71,7 +71,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ "$tag" != v* ]]; then
-            tag="v0.2.0"
+            tag="v0.2.1"
           fi
           mkdir -p dist
           for bin in simraft-node simraft-sim; do
@@ -88,7 +88,7 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           if (-not $tag.StartsWith("v")) {
-            $tag = "v0.2.0"
+            $tag = "v0.2.1"
           }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           foreach ($bin in @("simraft-node", "simraft-sim")) {
@@ -110,7 +110,7 @@ jobs:
     needs: build-archives
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Download all target archives
         uses: actions/download-artifact@v8
         with:

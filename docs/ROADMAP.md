@@ -1,15 +1,59 @@
 # simraft-kv Roadmap and Delivery History
 
-The `v0.1.0` release completes both the four foundational milestones
-(`M1` through `M4`) and the four post-M4 engineering lanes across
-all five workspace crates (`simraft-core`, `simraft-wire`,
-`simraft-kv`, `simraft-node`, and `simraft-sim`).
+This document tracks the delivered milestones, engineering lanes, and
+point releases across all five workspace crates (`simraft-core`,
+`simraft-wire`, `simraft-kv`, `simraft-node`, and `simraft-sim`) as
+well as the Python SDK (`simraft-kv` on PyPI).
 
-Every milestone and lane landed in two stages. Stage A introduced
-the public interfaces and failing tests, and Stage B implemented the
-minimal design that passed those tests and synchronized
-`docs/ARCHITECTURE.md` and `docs/INVARIANTS.md` to the code as
-built.
+Every core milestone and engineering lane landed in two stages. Stage
+A introduced the public interfaces and failing tests, and Stage B
+implemented the minimal design that passed those tests and
+synchronized `docs/ARCHITECTURE.md` and `docs/INVARIANTS.md` to the
+code as built.
+
+## Completed in v0.2.1
+
+- Added the pure-stdlib `"SRCL"` v1 linearizable TCP client
+  (`SimRaftClient`, `ClientReply`, `encode_client_request`,
+  `decode_client_response`, and `find_node_binary`) to the Python SDK
+  (`python/simraft_kv/__init__.py`), supporting automatic leader
+  redirect discovery, candidate list leader promotion, and transient
+  retry with preserved `(client_id, seq)` session deduplication.
+- Added unit, mock TCP redirect and deduplication, and live 3-node
+  `simraft-node serve` failover tests to `python/tests/test_sdk.py`,
+  and updated `ci.yml` to build both `simraft-sim` and `simraft-node`
+  before running the Python SDK suite.
+- Upgraded workspace dependencies (`sha2 0.11`, `criterion 0.8`, and
+  `clap 4.6.10`) while preserving the `1.88` MSRV gate.
+- Added `.github/workflows/verify-published.yml` to smoke-test
+  published `0.2.1` crates.io libraries, CLI binaries, and PyPI
+  packages in clean environments, and pinned `actions/checkout` to
+  `v7.0.1` across GitHub Actions workflows.
+- Converted all root `README.md` media and documentation links to
+  canonical GitHub URLs so PyPI renders images and repository links
+  without broken relative paths.
+
+## Completed in v0.2.0
+
+- Unified the five-crate workspace release (`simraft-core`,
+  `simraft-wire`, `simraft-kv`, `simraft-node`, and `simraft-sim`) at
+  version `0.2.0`.
+- Enforced single-voter durability-gated commitment (`R-06`) and
+  persisted-entry watermark clamping across follower log truncations
+  (`T-02`) so neither single-node commits nor stale persistence
+  acknowledgments can bypass durable storage.
+- Reduced single-entry `AppendEntries` heap allocations inside
+  `Node::step` to `4` within `APPEND_BUDGET = 7` (`L-03`), alongside
+  `0` allocations on `Tick` and `2` on `RequestVote`.
+- Completed live multi-process TCP durability and recovery test suites
+  for torn log tail truncation, mid-burst leader kill durability, and
+  wiped-member snapshot rejoin (`A-07` through `A-09`), plus post-heal
+  leader and state digest convergence checks (`H-02`) in
+  `simraft-sim`.
+- Shipped the typed Python chaos-sweep SDK (`simraft-kv` on PyPI with
+  5-platform maturin wheels) and GitHub Actions OIDC Trusted
+  Publishing workflows for crates.io, PyPI, and 5-platform GitHub
+  Releases.
 
 ## Completed in v0.1.0
 
@@ -37,10 +81,8 @@ built.
   share one 16 MiB bounded CRC-32 frame codec.
 - Built `simraft-node` with durable CRC-checked hard-state and log
   files, atomic SHA-256 verified snapshot persistence (`A-05` and
-  `A-06`), torn log tail truncation, mid-burst leader kill durability,
-  and wiped-member rejoin via snapshot (`A-07` through `A-09`),
-  bounded channels and socket timeouts, and the `serve` and `client`
-  CLI subcommands (`A-01` through `A-04`).
+  `A-06`), bounded channels and socket timeouts, and the `serve` and
+  `client` CLI subcommands (`A-01` through `A-04`).
 
 ### Lane 2 (Adversarial simulation depth)
 
@@ -58,8 +100,7 @@ built.
   catch-up benchmarks (`B-01`), scaled the linearizability checker
   benchmark to 100,000 operations across 64 keys (`L-04`), tightened
   `step_allocations` to `APPEND_BUDGET = 7` (`L-03`), and enforced
-  single-voter durability-gated commit and latency bounds (`R-06`
-  and `L-02`).
+  commit latency bounds (`L-02`).
 
 ### Lane 4 (Operability and embedding)
 
@@ -68,7 +109,7 @@ built.
   `simraft-core/examples/embed.rs` (`O-02`) as a single-file
   in-memory embedding reference.
 
-## Parked beyond v0.1.0
+## Parked beyond v0.2.1
 
 Joint consensus membership changes remain intentionally parked
 (`docs/ARCHITECTURE.md` section 14 A2). Single-server membership
