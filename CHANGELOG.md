@@ -4,6 +4,47 @@ All notable changes to the `simraft-kv` workspace are documented in
 this file. The format follows Keep a Changelog and this project
 adheres to Semantic Versioning.
 
+## [0.2.1] - 2026-11-26
+
+### Added
+
+- Pure-Python `"SRCL"` v1 linearizable TCP Raft client (`SimRaftClient`,
+  `ClientReply`, `encode_client_request`, `decode_client_response`,
+  `find_node_binary`, `MAX_PAYLOAD_BYTES`, and `MAX_CLIENT_BODY_BYTES`)
+  in `simraft_kv` with automatic leader redirect following, candidate
+  leader promotion, 16 MiB payload enforcement, and `(client_id, seq)`
+  session-deduplicated retries across `put`, `get`, `get_text`, and
+  `delete`.
+- Unit tests for `"SRCL"` request and response codecs, mock TCP
+  redirect and session-deduplication retry tests, and a live 3-node
+  `simraft-node serve` cluster failover integration test in
+  `python/tests/test_sdk.py`.
+- Post-publish registry verification workflow
+  (`.github/workflows/verify-published.yml`) testing published `0.2.1`
+  crates.io libraries (`simraft-core`, `simraft-kv`, `simraft-wire`),
+  `cargo install` CLI binaries (`simraft-sim`, `simraft-node`), and the
+  `simraft-kv==0.2.1` PyPI package on clean runners.
+
+### Changed
+
+- Updated workspace dependencies to `sha2 0.11`, `criterion 0.8`, and
+  `clap 4.6.10`, and bumped all five Rust crates and the `simraft-kv`
+  Python package to `0.2.1`.
+- Pinned `actions/checkout` to `v7.0.1` across GitHub Actions workflows
+  (including SHA-pinned `weekly-sweep.yml`) and updated `ci.yml` to
+  build both `simraft-sim` and `simraft-node` prior to running the
+  Python SDK test suite.
+- Updated `docs/ROADMAP.md` with the `v0.2.0` and `v0.2.1` delivery
+  history and expanded the Python Quickstart in `README.md` with
+  `SimRaftClient`.
+
+### Fixed
+
+- Converted relative media (`docs/media/...`) and repository document
+  links in the root `README.md` to canonical GitHub URLs so images and
+  documentation links render properly on PyPI and external package
+  registries.
+
 ## [0.2.0] - 2026-11-25
 
 Full workspace release of all five crates at version `0.2.0`

@@ -1,8 +1,8 @@
 <p align="center">
   <a href="https://github.com/david-engelmann/simraft-kv">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/media/simraft-lockup-dark.svg">
-      <img src="docs/media/simraft-lockup-light.svg" alt="simraft-kv" height="56">
+      <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/simraft-lockup-dark.svg">
+      <img src="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/simraft-lockup-light.svg" alt="simraft-kv" height="56">
     </picture>
   </a>
 </p>
@@ -14,10 +14,10 @@
 </p>
 
 <p align="center">
-  <a href="docs/README.md"><b>Docs</b></a> ·
-  <a href="docs/ARCHITECTURE.md">Architecture</a> ·
-  <a href="docs/INVARIANTS.md">Invariants</a> ·
-  <a href="SECURITY.md">Security</a> ·
+  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/docs/README.md"><b>Docs</b></a> ·
+  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md">Architecture</a> ·
+  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md">Invariants</a> ·
+  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/SECURITY.md">Security</a> ·
   <a href="https://github.com/david-engelmann/simraft-kv/releases">Releases</a>
 </p>
 
@@ -26,12 +26,12 @@
   <a href="https://crates.io/crates/simraft-core"><img src="https://img.shields.io/crates/v/simraft-core?color=0f766e&label=crates.io" alt="crates.io version"></a>
   <a href="https://pypi.org/project/simraft-kv/"><img src="https://img.shields.io/pypi/v/simraft-kv?color=0f766e&label=pypi" alt="PyPI version"></a>
   <a href="https://docs.rs/simraft-core"><img src="https://img.shields.io/docsrs/simraft-core" alt="docs.rs"></a>
-  <a href="Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.88-informational" alt="MSRV 1.88"></a>
-  <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache-2.0 license"></a>
+  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.88-informational" alt="MSRV 1.88"></a>
+  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache-2.0 license"></a>
 </p>
 
 <p align="center">
-  <img src="docs/media/money-shot.gif"
+  <img src="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/money-shot.gif"
        alt="A two-part view with live five-node cluster topology and safety oracle status above and real simraft-sim and simraft-node terminal runs below, sweeping 25 chaos seeds, replaying seed 912 deterministically, running the sans-I/O embed example, and executing linearizable TCP writes and reads"
        width="900">
 </p>
@@ -50,8 +50,8 @@ Distributed consensus bugs hide in rare interleavings of asymmetric partitions, 
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/determinism-proof-dark.svg">
-    <img src="docs/media/determinism-proof-light.svg"
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/determinism-proof-dark.svg">
+    <img src="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/determinism-proof-light.svg"
          alt="Four measured and verified simraft-kv metrics showing 1.50 microsecond three-node commit rounds, 0 Tick and 4 single-entry AppendEntries allocations, 100,000 weekly chaos seeds, and S-01 through S-05 safety plus Wing and Gong linearizability checks"
          width="860">
   </picture>
@@ -61,8 +61,8 @@ Distributed consensus bugs hide in rare interleavings of asymmetric partitions, 
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/media/how-it-works-dark.svg">
-    <img src="docs/media/how-it-works-light.svg"
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/how-it-works-dark.svg">
+    <img src="https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/docs/media/how-it-works-light.svg"
          alt="Tick, SRKV peer frames, persist watermarks, and client requests enter the pure sans-I/O simraft-core and simraft-kv state machines over the shared simraft-wire codec, driving both the deterministic simraft-sim chaos harness and the durable TCP simraft-node server"
          width="860">
   </picture>
@@ -70,15 +70,15 @@ Distributed consensus bugs hide in rare interleavings of asymmetric partitions, 
 
 | Crate | Kind | External runtime deps | Role |
 | --- | --- | --- | --- |
-| [`simraft-core`](simraft-core/README.md) | library | none (`std` only) | Pure sans-I/O Raft state machine (`Node::step`), Pre-Vote elections, fast log backup, Figure 8 commitment, `ReadIndex`, chunked snapshots, and single-server membership changes. |
-| [`simraft-wire`](simraft-wire/README.md) | library | `crc32fast` | Canonical `"SRKV"` message frame, log entry, and cluster config codec with 16 MiB frame bounds and IEEE CRC-32 checksums. |
-| [`simraft-kv`](simraft-kv/README.md) | library | none (`std` only) | Deterministic `BTreeMap` key-value state machine, bounded client session deduplication, and SHA-256 verified snapshot payloads. |
-| [`simraft-node`](simraft-node/README.md) | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, and linearizable `client` CLI (`put`, `get`, `delete`). |
-| [`simraft-sim`](simraft-sim/README.md) | library and binary | `clap`, `crc32fast`, `sha2` | Single-threaded deterministic simulator, seeded `--chaos` fault injector, per-event safety oracles, and Wing and Gong linearizability checker. |
+| [`simraft-core`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-core/README.md) | library | none (`std` only) | Pure sans-I/O Raft state machine (`Node::step`), Pre-Vote elections, fast log backup, Figure 8 commitment, `ReadIndex`, chunked snapshots, and single-server membership changes. |
+| [`simraft-wire`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-wire/README.md) | library | `crc32fast` | Canonical `"SRKV"` message frame, log entry, and cluster config codec with 16 MiB frame bounds and IEEE CRC-32 checksums. |
+| [`simraft-kv`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-kv/README.md) | library | none (`std` only) | Deterministic `BTreeMap` key-value state machine, bounded client session deduplication, and SHA-256 verified snapshot payloads. |
+| [`simraft-node`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-node/README.md) | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, and linearizable `client` CLI (`put`, `get`, `delete`). |
+| [`simraft-sim`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-sim/README.md) | library and binary | `clap`, `crc32fast`, `sha2` | Single-threaded deterministic simulator, seeded `--chaos` fault injector, per-event safety oracles, and Wing and Gong linearizability checker. |
 
 ## Quickstart
 
-Install the server and simulator binaries from crates.io, via `cargo-binstall` and GitHub Releases, or install the simulator CLI and typed Python SDK from PyPI.
+Install the server and simulator binaries from crates.io, via `cargo-binstall` and GitHub Releases, or install the simulator CLI, linearizable TCP client, and typed Python SDK from PyPI.
 
 ```sh
 cargo install simraft-node simraft-sim
@@ -91,6 +91,15 @@ import simraft_kv
 
 sweep = simraft_kv.simulate(seed=912, seeds=5, chaos=True)
 assert sweep.all_passed
+
+# Connect directly to a live simraft-node TCP cluster (follows leader redirects
+# and preserves (client_id, seq) session deduplication across retries)
+client = simraft_kv.SimRaftClient(
+    ["127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003"]
+)
+client.put("greeting", "hello")
+assert client.get_text("greeting") == "hello"
+client.delete("greeting")
 ```
 
 ### Run a deterministic chaos sweep and replay a single seed
@@ -176,16 +185,16 @@ cargo bench --workspace --locked -- --test
 
 | If you want to... | Read |
 | --- | --- |
-| Browse every document in the workspace | [Documentation index](docs/README.md) |
-| Read the protocol state rules, `"SRKV"` byte tables, and digest domains | [Architecture](docs/ARCHITECTURE.md) · [Decisions](DECISIONS.md) |
-| Audit every safety, durability, liveness, and determinism invariant | [Invariants and traceability matrix](docs/INVARIANTS.md) |
-| Explore individual workspace crates | [simraft-core](simraft-core/README.md) · [simraft-wire](simraft-wire/README.md) · [simraft-kv](simraft-kv/README.md) · [simraft-node](simraft-node/README.md) · [simraft-sim](simraft-sim/README.md) |
-| Check defensive bounds, threat model, and release history | [Security policy](SECURITY.md) · [Roadmap](docs/ROADMAP.md) · [Changelog](CHANGELOG.md) |
+| Browse every document in the workspace | [Documentation index](https://github.com/david-engelmann/simraft-kv/blob/main/docs/README.md) |
+| Read the protocol state rules, `"SRKV"` byte tables, and digest domains | [Architecture](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md) · [Decisions](https://github.com/david-engelmann/simraft-kv/blob/main/DECISIONS.md) |
+| Audit every safety, durability, liveness, and determinism invariant | [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md) |
+| Explore individual workspace crates | [simraft-core](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-core/README.md) · [simraft-wire](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-wire/README.md) · [simraft-kv](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-kv/README.md) · [simraft-node](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-node/README.md) · [simraft-sim](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-sim/README.md) |
+| Check defensive bounds, threat model, and release history | [Security policy](https://github.com/david-engelmann/simraft-kv/blob/main/SECURITY.md) · [Roadmap](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ROADMAP.md) · [Changelog](https://github.com/david-engelmann/simraft-kv/blob/main/CHANGELOG.md) |
 
 ## Contributing
 
-[CONTRIBUTING.md](CONTRIBUTING.md) covers local verification commands, replaying failing chaos seeds, invariant traceability rules, and public copy standards.
+[CONTRIBUTING.md](https://github.com/david-engelmann/simraft-kv/blob/main/CONTRIBUTING.md) covers local verification commands, replaying failing chaos seeds, invariant traceability rules, and public copy standards.
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under either of [MIT](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-MIT) or [Apache-2.0](https://github.com/david-engelmann/simraft-kv/blob/main/LICENSE-APACHE) at your option.
