@@ -43,7 +43,7 @@ jobs:
             ext: ".exe"
             archive: zip
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -68,7 +68,7 @@ jobs:
           set -euo pipefail
           tag="${GITHUB_REF_NAME}"
           if [[ "$tag" != v* ]]; then
-            tag="v0.1.0"
+            tag="v0.2.0"
           fi
           mkdir -p dist
           for bin in simraft-node simraft-sim; do
@@ -85,7 +85,7 @@ jobs:
         run: |
           $tag = $env:GITHUB_REF_NAME
           if (-not $tag.StartsWith("v")) {
-            $tag = "v0.1.0"
+            $tag = "v0.2.0"
           }
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           foreach ($bin in @("simraft-node", "simraft-sim")) {
@@ -96,7 +96,7 @@ jobs:
             Compress-Archive -Path "$stage/*" -DestinationPath "dist/$bin-$tag-${{ matrix.target }}.zip" -Force
           }
       - name: Upload target archives
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: archives-${{ matrix.target }}
           path: dist/*
@@ -107,16 +107,16 @@ jobs:
     needs: build-archives
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: Download all target archives
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
       - name: Generate and verify SHA256SUMS
         run: |
           cd artifacts
-          sha256sum * > SHA256SUMS
+          sha256sum -- simraft-* > SHA256SUMS
           sha256sum --check SHA256SUMS
           cat SHA256SUMS
       - name: Create GitHub Release
@@ -125,8 +125,26 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="${GITHUB_REF_NAME}"
+          python3 - <<'PY'
+          import os, pathlib
+          ver = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          lines = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8").splitlines()
+          start = None
+          end = len(lines)
+          prefix = f"## [{ver}]"
+          for i, line in enumerate(lines):
+              if start is None:
+                  if line.startswith(prefix):
+                      start = i + 1
+              elif line.startswith("## "):
+                  end = i
+                  break
+          notes = "\n".join(lines[start:end]).strip() if start is not None else f"Release {ver}"
+          pathlib.Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
+          PY
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" artifacts/* --clobber
+            gh release edit "$tag" --title "$tag" --notes-file release-notes.md --latest
           else
-            gh release create "$tag" artifacts/* --title "$tag" --generate-notes
+            gh release create "$tag" artifacts/* --title "$tag" --notes-file release-notes.md --latest
           fi

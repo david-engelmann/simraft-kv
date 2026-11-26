@@ -1,4 +1,9 @@
 /target/
+/dist/
+/.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
 sweep-*.json
 proptest-regressions/
 .DS_Store

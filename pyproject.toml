@@ -1,0 +1,55 @@
+[build-system]
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "simraft-kv"
+version = "0.2.0"
+description = "Deterministic Raft chaos simulator CLI and typed linearizability sweep SDK."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT OR Apache-2.0"
+authors = [{ name = "David Engelmann" }]
+keywords = [
+    "raft",
+    "consensus",
+    "simulation",
+    "fault-injection",
+    "linearizability",
+    "deterministic",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Rust",
+    "Topic :: System :: Distributed Computing",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/david-engelmann/simraft-kv"
+Repository = "https://github.com/david-engelmann/simraft-kv"
+Documentation = "https://docs.rs/simraft-core"
+Changelog = "https://github.com/david-engelmann/simraft-kv/blob/main/CHANGELOG.md"
+Issues = "https://github.com/david-engelmann/simraft-kv/issues"
+
+[tool.maturin]
+manifest-path = "simraft-sim/Cargo.toml"
+bindings = "bin"
+python-source = "python"
+module-name = "simraft_kv"
+strip = true
+include = ["LICENSE-MIT", "LICENSE-APACHE"]

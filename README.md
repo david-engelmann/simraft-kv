@@ -24,6 +24,7 @@
 <p align="center">
   <a href="https://github.com/david-engelmann/simraft-kv/actions/workflows/ci.yml?query=branch%3Amain"><img src="https://github.com/david-engelmann/simraft-kv/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI on main"></a>
   <a href="https://crates.io/crates/simraft-core"><img src="https://img.shields.io/crates/v/simraft-core?color=0f766e&label=crates.io" alt="crates.io version"></a>
+  <a href="https://pypi.org/project/simraft-kv/"><img src="https://img.shields.io/pypi/v/simraft-kv?color=0f766e&label=pypi" alt="PyPI version"></a>
   <a href="https://docs.rs/simraft-core"><img src="https://img.shields.io/docsrs/simraft-core" alt="docs.rs"></a>
   <a href="Cargo.toml"><img src="https://img.shields.io/badge/MSRV-1.88-informational" alt="MSRV 1.88"></a>
   <a href="LICENSE-MIT"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue" alt="MIT or Apache-2.0 license"></a>
@@ -77,10 +78,19 @@ Distributed consensus bugs hide in rare interleavings of asymmetric partitions, 
 
 ## Quickstart
 
-Install the server and simulator binaries from crates.io (or via `cargo-binstall` and GitHub Releases), or run directly from the workspace.
+Install the server and simulator binaries from crates.io, via `cargo-binstall` and GitHub Releases, or install the simulator CLI and typed Python SDK from PyPI.
 
 ```sh
 cargo install simraft-node simraft-sim
+# or install simraft-sim and the Python SDK from PyPI
+pip install simraft-kv
+```
+
+```python
+import simraft_kv
+
+sweep = simraft_kv.simulate(seed=912, seeds=5, chaos=True)
+assert sweep.all_passed
 ```
 
 ### Run a deterministic chaos sweep and replay a single seed
@@ -141,7 +151,7 @@ cargo run -p simraft-core --example embed --locked
 
 ## Benchmarks and verification
 
-Measured with the Criterion benchmarks in this repository on hosted runners (`2026-11-19` baseline plus `v0.1.0` allocation gate).
+Measured with the Criterion benchmarks in this repository on hosted runners (`2026-11-19` baseline plus `v0.2.0` allocation gate).
 
 | Benchmark / Gate | Workload | Median / Bound | Throughput / Budget |
 | --- | --- | --- | --- |

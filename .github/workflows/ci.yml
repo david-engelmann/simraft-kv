@@ -18,7 +18,7 @@ jobs:
     name: Docs and determinism guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: No em dashes or en dashes in public copy
         run: |
           python3 - <<'PY'
@@ -68,7 +68,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -91,13 +91,18 @@ jobs:
           cargo test --workspace --all-features --locked
           cargo bench --workspace --locked -- --test
           cargo run -p simraft-core --example embed --locked
+      - name: Build simulator CLI and run Python SDK tests
+        shell: bash
+        run: |
+          cargo build --locked -p simraft-sim --bin simraft-sim
+          python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
 
   macos-gates:
     name: Rust gates (macos-latest)
     runs-on: macos-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -120,6 +125,11 @@ jobs:
           cargo test --workspace --all-features --locked
           cargo bench --workspace --locked -- --test
           cargo run -p simraft-core --example embed --locked
+      - name: Build simulator CLI and run Python SDK tests
+        shell: bash
+        run: |
+          cargo build --locked -p simraft-sim --bin simraft-sim
+          python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
 
   rust-gates:
     name: Rust gates (fmt, clippy, doc, test, bench smoke)
@@ -136,7 +146,7 @@ jobs:
     name: MSRV 1.88 check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: Install MSRV toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
@@ -160,7 +170,7 @@ jobs:
       PROPTEST_CASES: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
       SEED_COUNT: ${{ github.event_name == 'pull_request' && '1000' || '10000' }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@v7
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
