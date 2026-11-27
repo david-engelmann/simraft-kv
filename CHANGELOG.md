@@ -4,6 +4,42 @@ All notable changes to the `simraft-kv` workspace are documented in
 this file. The format follows Keep a Changelog and this project
 adheres to Semantic Versioning.
 
+## [0.2.2] - 2026-11-27
+
+### Added
+
+- Deterministic zero-extra-dependency shell completion scripts (`Shell`
+  and `completions_script`) for `bash`, `zsh`, `fish`, and `powershell`
+  across `simraft-node completions <SHELL>`,
+  `simraft-sim --completions <SHELL>`, and `simraft_kv.completions` in
+  the Python SDK, with CLI and SDK integration tests covering all four
+  shells across both binaries.
+- POSIX `install.sh` release installer for Linux and macOS (`x86_64` and
+  `aarch64`) that downloads `SHA256SUMS` and verifies every archive
+  digest via `sha256sum` or `shasum -a 256` prior to extraction, failing
+  closed on checksum mismatch and supporting `--version`,
+  `--install-dir`, `--bin`, and `--base-url`.
+- Supply-chain, citation, build, and community governance standards
+  including `deny.toml` (`cargo-deny` v2 license, duplicate-crate,
+  advisory, and registry checks), `CITATION.cff`, `CODE_OF_CONDUCT.md`
+  (Contributor Covenant v2.1), `.editorconfig`, `Makefile`,
+  `.github/pull_request_template.md`, and `.github/ISSUE_TEMPLATE`
+  templates.
+
+### Changed
+
+- Added a `cargo-deny` supply-chain audit job (`deny`) and `shellcheck`
+  validation for `install.sh` to `.github/workflows/ci.yml`, updated
+  `.github/workflows/release.yml` fallback tags and
+  `.github/workflows/verify-published.yml` registry smoke checks to
+  `0.2.2`, and renamed the scenario sweep job in
+  `.github/workflows/weekly-sweep.yml` to
+  `Adversarial fault scenarios, wide seed batches`.
+- Bumped all five Rust crates (`simraft-core`, `simraft-wire`,
+  `simraft-kv`, `simraft-node`, and `simraft-sim`) and the `simraft-kv`
+  Python package to `0.2.2`, and documented `install.sh` and shell
+  completions in `README.md`.
+
 ## [0.2.1] - 2026-11-26
 
 ### Added

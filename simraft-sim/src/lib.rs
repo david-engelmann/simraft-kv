@@ -13,6 +13,7 @@
 #![warn(missing_docs)]
 
 pub mod clock;
+pub mod completions;
 pub mod disk;
 pub mod faults;
 pub mod harness;
@@ -30,6 +31,7 @@ pub use simraft_wire as wire;
 /// The version of the simulator trace format emitted by this crate.
 pub const TRACE_FORMAT_VERSION: u16 = 1;
 
+pub use completions::{Shell, completions_script};
 pub use faults::{DirectedCut, FaultConfig, ScriptedOp};
 pub use harness::{Harness, RunReport, SimConfig};
 pub use history::{History, Op, OpRecord, OpResult};

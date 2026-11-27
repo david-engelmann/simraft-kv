@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import importlib.util
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import socket
 import struct
 import subprocess
 import sys
+import tarfile
 import tempfile
 import threading
 import unittest
@@ -99,8 +101,198 @@ def _reserve_loopback_ports(count: int) -> list[int]:
 
 class SimRaftKvSdkTests(unittest.TestCase):
     def test_version_matches_package(self) -> None:
-        self.assertEqual(simraft_kv.__version__, "0.2.1")
+        self.assertEqual(simraft_kv.__version__, "0.2.2")
         self.assertEqual(simraft_kv.version(), simraft_kv.__version__)
+
+    def test_completions_cover_all_shells_for_sim_and_node(self) -> None:
+        self.assertIn("completions", simraft_kv.__all__)
+        shells = ("bash", "zsh", "fish", "powershell")
+
+        for shell in shells:
+            with self.subTest(tool="simraft-sim", shell=shell):
+                script = simraft_kv.completions(shell, tool="simraft-sim")
+                self.assertEqual(
+                    script, simraft_kv.completions(shell, tool="simraft-sim")
+                )
+                for flag in (
+                    "--seed",
+                    "--seeds",
+                    "--json",
+                    "--trace",
+                    "--chaos",
+                    "--nodes",
+                    "--ticks",
+                    "--completions",
+                ):
+                    self.assertIn(flag, script)
+
+        self.assertEqual(
+            simraft_kv.completions(),
+            simraft_kv.completions("bash", tool="simraft-sim"),
+        )
+
+        if _has_node_binary():
+            for shell in shells:
+                with self.subTest(tool="simraft-node", shell=shell):
+                    script = simraft_kv.completions(shell, tool="simraft-node")
+                    self.assertEqual(
+                        script,
+                        simraft_kv.completions(shell, tool="simraft-node"),
+                    )
+                    for token in (
+                        "serve",
+                        "--id",
+                        "--member",
+                        "--data-dir",
+                        "--tick-ms",
+                        "client",
+                        "--server",
+                        "put",
+                        "get",
+                        "delete",
+                        "completions",
+                    ):
+                        self.assertIn(token, script)
+
+        with self.assertRaises(ValueError):
+            simraft_kv.completions("tcsh")
+        with self.assertRaises(ValueError):
+            simraft_kv.completions("bash", tool="unknown-tool")
+        with self.assertRaises(TypeError):
+            simraft_kv.completions(123)  # type: ignore[arg-type]
+        with self.assertRaises(TypeError):
+            simraft_kv.completions("bash", tool=123)  # type: ignore[arg-type]
+
+    @unittest.skipIf(os.name == "nt", "POSIX install.sh targets Linux and macOS")
+    @unittest.skipUnless(
+        _has_node_binary(),
+        "simraft-node binary is not built or installed",
+    )
+    def test_install_sh_offline_sha256_verification_and_fail_closed(
+        self,
+    ) -> None:
+        install_script = ROOT / "install.sh"
+        self.assertTrue(install_script.is_file(), "install.sh must exist")
+        self.assertTrue(
+            os.access(install_script, os.X_OK),
+            "install.sh must be executable",
+        )
+
+        help_proc = subprocess.run(
+            ["/bin/sh", str(install_script), "--help"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(help_proc.returncode, 0, help_proc.stderr)
+        self.assertIn("--version", help_proc.stdout)
+        self.assertIn("--install-dir", help_proc.stdout)
+        self.assertIn("--bin", help_proc.stdout)
+        self.assertIn("--base-url", help_proc.stdout)
+
+        sim_bin = simraft_kv.find_binary()
+        node_bin = simraft_kv.find_node_binary()
+        target = "x86_64-unknown-linux-gnu"
+        tag = "v0.2.2"
+
+        with tempfile.TemporaryDirectory(prefix="simraft-install-test-") as tmp:
+            tmp_path = Path(tmp)
+            rel_dir = tmp_path / "releases" / "download" / tag
+            rel_dir.mkdir(parents=True, exist_ok=True)
+
+            sums_lines: list[str] = []
+            for name, src_bin in (
+                ("simraft-node", node_bin),
+                ("simraft-sim", sim_bin),
+            ):
+                archive_name = f"{name}-{tag}-{target}.tar.gz"
+                archive_path = rel_dir / archive_name
+                with tarfile.open(archive_path, "w:gz") as tar:
+                    tar.add(src_bin, arcname=name)
+                    for doc_name in (
+                        "LICENSE-MIT",
+                        "LICENSE-APACHE",
+                        "README.md",
+                    ):
+                        tar.add(ROOT / doc_name, arcname=doc_name)
+                digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                sums_lines.append(f"{digest}  {archive_name}")
+
+            sums_file = rel_dir / "SHA256SUMS"
+            sums_file.write_text("\n".join(sums_lines) + "\n", encoding="utf-8")
+
+            dest_ok = tmp_path / "bin-ok"
+            env = {**os.environ, "SIMRAFT_TARGET": target}
+            ok_proc = subprocess.run(
+                [
+                    str(install_script),
+                    "--version",
+                    tag,
+                    "--install-dir",
+                    str(dest_ok),
+                    "--bin",
+                    "all",
+                    "--base-url",
+                    (tmp_path / "releases").as_uri(),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(ok_proc.returncode, 0, ok_proc.stderr)
+
+            for name in ("simraft-node", "simraft-sim"):
+                installed = dest_ok / name
+                self.assertTrue(installed.is_file())
+                self.assertEqual(installed.stat().st_mode & 0o777, 0o755)
+                ver_proc = subprocess.run(
+                    [str(installed), "--version"],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(ver_proc.returncode, 0, ver_proc.stderr)
+                self.assertIn("0.2.2", ver_proc.stdout)
+
+            # Tamper with the second archive's SHA-256 and ensure install.sh
+            # fails closed (exit 1) BEFORE extracting even the first binary.
+            tampered_first_char = (
+                "0" if sums_lines[1][0] != "0" else "1"
+            )
+            tampered_sums = [
+                sums_lines[0],
+                tampered_first_char + sums_lines[1][1:],
+            ]
+            sums_file.write_text(
+                "\n".join(tampered_sums) + "\n", encoding="utf-8"
+            )
+
+            dest_bad = tmp_path / "bin-tampered"
+            bad_proc = subprocess.run(
+                [
+                    str(install_script),
+                    "--version",
+                    tag,
+                    "--install-dir",
+                    str(dest_bad),
+                    "--bin",
+                    "all",
+                    "--base-url",
+                    (tmp_path / "releases").as_uri(),
+                ],
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(bad_proc.returncode, 1)
+            self.assertIn("checksum mismatch", bad_proc.stderr)
+            self.assertFalse(
+                (dest_bad / "simraft-node").exists(),
+                "must fail closed before extracting any archive",
+            )
+            self.assertFalse((dest_bad / "simraft-sim").exists())
 
     def test_chaos_sweep_is_deterministic_and_linearizable(self) -> None:
         first = simraft_kv.simulate(seed=912, seeds=3, chaos=True)

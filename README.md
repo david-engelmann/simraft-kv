@@ -73,17 +73,26 @@ Distributed consensus bugs hide in rare interleavings of asymmetric partitions, 
 | [`simraft-core`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-core/README.md) | library | none (`std` only) | Pure sans-I/O Raft state machine (`Node::step`), Pre-Vote elections, fast log backup, Figure 8 commitment, `ReadIndex`, chunked snapshots, and single-server membership changes. |
 | [`simraft-wire`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-wire/README.md) | library | `crc32fast` | Canonical `"SRKV"` message frame, log entry, and cluster config codec with 16 MiB frame bounds and IEEE CRC-32 checksums. |
 | [`simraft-kv`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-kv/README.md) | library | none (`std` only) | Deterministic `BTreeMap` key-value state machine, bounded client session deduplication, and SHA-256 verified snapshot payloads. |
-| [`simraft-node`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-node/README.md) | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, and linearizable `client` CLI (`put`, `get`, `delete`). |
+| [`simraft-node`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-node/README.md) | library and binary | `clap`, `crc32fast` | File-backed durable store, TCP peer transport, `serve` daemon, linearizable `client` CLI (`put`, `get`, `delete`), and static `completions` generator. |
 | [`simraft-sim`](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-sim/README.md) | library and binary | `clap`, `crc32fast`, `sha2` | Single-threaded deterministic simulator, seeded `--chaos` fault injector, per-event safety oracles, and Wing and Gong linearizability checker. |
 
 ## Quickstart
 
-Install the server and simulator binaries from crates.io, via `cargo-binstall` and GitHub Releases, or install the simulator CLI, linearizable TCP client, and typed Python SDK from PyPI.
+Install prebuilt Linux or macOS release archives verified against `SHA256SUMS` with [`install.sh`](https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/install.sh), build from crates.io or `cargo-binstall`, or install the simulator CLI, linearizable TCP client, and typed Python SDK from PyPI.
 
 ```sh
+curl -fsSL https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/install.sh | sh
+# or compile from crates.io
 cargo install simraft-node simraft-sim
 # or install simraft-sim and the Python SDK from PyPI
 pip install simraft-kv
+```
+
+Generate static shell completions for `bash`, `zsh`, `fish`, or `powershell` from either binary.
+
+```sh
+simraft-node completions zsh > ~/.zfunc/_simraft-node
+simraft-sim --completions zsh > ~/.zfunc/_simraft-sim
 ```
 
 ```python
@@ -91,6 +100,7 @@ import simraft_kv
 
 sweep = simraft_kv.simulate(seed=912, seeds=5, chaos=True)
 assert sweep.all_passed
+zsh_script = simraft_kv.completions("zsh", tool="simraft-sim")
 
 # Connect directly to a live simraft-node TCP cluster (follows leader redirects
 # and preserves (client_id, seq) session deduplication across retries)
@@ -193,7 +203,7 @@ cargo bench --workspace --locked -- --test
 
 ## Contributing
 
-[CONTRIBUTING.md](https://github.com/david-engelmann/simraft-kv/blob/main/CONTRIBUTING.md) covers local verification commands, replaying failing chaos seeds, invariant traceability rules, and public copy standards.
+[CONTRIBUTING.md](https://github.com/david-engelmann/simraft-kv/blob/main/CONTRIBUTING.md) covers local verification commands, replaying failing chaos seeds, invariant traceability rules, and public copy standards. Participation follows the [Code of Conduct](https://github.com/david-engelmann/simraft-kv/blob/main/CODE_OF_CONDUCT.md).
 
 ## License
 

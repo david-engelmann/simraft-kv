@@ -854,7 +854,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "simraft-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "criterion",
  "proptest",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "simraft-kv"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "proptest",
  "simraft-core",
@@ -870,7 +870,7 @@ dependencies = [
 
 [[package]]
 name = "simraft-node"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "crc32fast",
@@ -881,7 +881,7 @@ dependencies = [
 
 [[package]]
 name = "simraft-sim"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "clap",
  "crc32fast",
@@ -894,7 +894,7 @@ dependencies = [
 
 [[package]]
 name = "simraft-wire"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "crc32fast",
  "simraft-core",

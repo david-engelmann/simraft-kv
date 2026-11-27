@@ -24,10 +24,12 @@
 #![warn(missing_docs)]
 
 pub mod client;
+pub mod completions;
 pub mod runtime;
 pub mod store;
 
 pub use client::Client;
+pub use completions::{Shell, completions_script};
 
 use std::collections::BTreeSet;
 use std::fmt;

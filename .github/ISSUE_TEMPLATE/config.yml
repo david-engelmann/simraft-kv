@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability report
+    url: https://github.com/david-engelmann/simraft-kv/security/advisories/new
+    about: Report consensus safety violations, memory exhaustion bugs, or security vulnerabilities privately per SECURITY.md.
+  - name: Architecture and invariants reference
+    url: https://github.com/david-engelmann/simraft-kv/blob/main/docs/README.md
+    about: Read ARCHITECTURE.md, INVARIANTS.md, and DECISIONS.md before opening an issue.
