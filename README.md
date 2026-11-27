@@ -14,7 +14,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/david-engelmann/simraft-kv/blob/main/docs/README.md"><b>Docs</b></a> ·
+  <a href="https://david-engelmann.github.io/simraft-kv/"><b>Docs</b></a> ·
+  <a href="https://github.com/david-engelmann/simraft-kv/tree/main/examples">Examples</a> ·
   <a href="https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md">Architecture</a> ·
   <a href="https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md">Invariants</a> ·
   <a href="https://github.com/david-engelmann/simraft-kv/blob/main/SECURITY.md">Security</a> ·
@@ -195,11 +196,14 @@ cargo bench --workspace --locked -- --test
 
 | If you want to... | Read |
 | --- | --- |
-| Browse every document in the workspace | [Documentation index](https://github.com/david-engelmann/simraft-kv/blob/main/docs/README.md) |
+| Browse the full guides, CLI and Python reference, and searchable handbook | [Published documentation site](https://david-engelmann.github.io/simraft-kv/) · [Documentation index](https://github.com/david-engelmann/simraft-kv/blob/main/docs/README.md) |
+| Run copy-paste chaos sweeps, deterministic trace replays, and localhost clusters | [Runnable examples](https://github.com/david-engelmann/simraft-kv/tree/main/examples) · [Rust sans-I/O embed example](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-core/examples/embed.rs) |
 | Read the protocol state rules, `"SRKV"` byte tables, and digest domains | [Architecture](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ARCHITECTURE.md) · [Decisions](https://github.com/david-engelmann/simraft-kv/blob/main/DECISIONS.md) |
 | Audit every safety, durability, liveness, and determinism invariant | [Invariants and traceability matrix](https://github.com/david-engelmann/simraft-kv/blob/main/docs/INVARIANTS.md) |
+| Compare `simraft-kv` with `tikv/raft-rs`, `openraft`, `etcd/raft`, and simulation harnesses | [How simraft-kv compares](https://github.com/david-engelmann/simraft-kv/blob/main/docs/COMPARISON.md) · [FAQ](https://github.com/david-engelmann/simraft-kv/blob/main/docs/FAQ.md) |
+| Integrate AI coding agents or check workspace contributor invariants | [Agent integration guide](https://github.com/david-engelmann/simraft-kv/blob/main/AGENTS.md) |
 | Explore individual workspace crates | [simraft-core](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-core/README.md) · [simraft-wire](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-wire/README.md) · [simraft-kv](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-kv/README.md) · [simraft-node](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-node/README.md) · [simraft-sim](https://github.com/david-engelmann/simraft-kv/blob/main/simraft-sim/README.md) |
-| Check defensive bounds, threat model, and release history | [Security policy](https://github.com/david-engelmann/simraft-kv/blob/main/SECURITY.md) · [Roadmap](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ROADMAP.md) · [Changelog](https://github.com/david-engelmann/simraft-kv/blob/main/CHANGELOG.md) |
+| Check defensive bounds, fuzz targets, threat model, and release history | [Security policy](https://github.com/david-engelmann/simraft-kv/blob/main/SECURITY.md) · [Fuzz targets](https://github.com/david-engelmann/simraft-kv/tree/main/fuzz) · [Roadmap](https://github.com/david-engelmann/simraft-kv/blob/main/docs/ROADMAP.md) · [Changelog](https://github.com/david-engelmann/simraft-kv/blob/main/CHANGELOG.md) |
 
 ## Contributing
 

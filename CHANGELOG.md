@@ -4,6 +4,43 @@ All notable changes to the `simraft-kv` workspace are documented in
 this file. The format follows Keep a Changelog and this project
 adheres to Semantic Versioning.
 
+## [0.2.3] - 2026-11-27
+
+### Added
+
+- Published `mdBook` documentation site (`book/`) with custom deep-teal
+  `brand.css` theme, Mermaid architecture diagram support, `404.html`,
+  OpenGraph and Twitter social metadata, automated `book/sync-docs.sh`
+  staging with canonical GitHub link rewriting, `mdbook-linkcheck`
+  dead-link enforcement, and GitHub Pages deployment in
+  `.github/workflows/docs.yml`.
+- Runnable top-level `examples/` directory (`chaos_sweep_and_replay.py`
+  and `cluster_quickstart.sh`) exercising 10-seed `--chaos` sweeps,
+  byte-identical trace replay, offline `"SRCL"` v1 framing, shell
+  completions, and 3-node localhost TCP `put`/`get`/`delete` workflows
+  in CI.
+- Out-of-workspace `cargo-fuzz` harness (`fuzz/`) with seed corpora and
+  three fuzz targets (`wire_frame`, `kv_codec`, and `client_protocol`)
+  covering `"SRKV"` frame reassembly, `"SRSN"` snapshot and command
+  codecs, and `"SRCL"` client framing, compiled on stable Rust in CI.
+- Root `AGENTS.md` guide for AI coding agents, `docs/FAQ.md`, and
+  `docs/COMPARISON.md` comparing `simraft-kv` against `tikv/raft-rs`,
+  `openraft`, `etcd/raft`, and deterministic simulation harnesses.
+- Clean-machine release installer workflow
+  (`.github/workflows/clean-install.yml`) verifying `install.sh` on
+  fresh Ubuntu and macOS runners without a source checkout or Rust
+  toolchain, plus SLSA build provenance attestations
+  (`actions/attest-build-provenance@v2`) on GitHub Release archives in
+  `.github/workflows/release.yml`.
+
+### Changed
+
+- Updated root `README.md` navigation links and documentation matrix,
+  expanded `.github/ISSUE_TEMPLATE/config.yml` with Published Docs and
+  GitHub Discussions links, added `book`, `examples`, and `fuzz-check`
+  targets to `Makefile`, and bumped all five workspace crates and the
+  `simraft-kv` Python package to `0.2.3`.
+
 ## [0.2.2] - 2026-11-27
 
 ### Added

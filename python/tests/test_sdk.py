@@ -101,7 +101,7 @@ def _reserve_loopback_ports(count: int) -> list[int]:
 
 class SimRaftKvSdkTests(unittest.TestCase):
     def test_version_matches_package(self) -> None:
-        self.assertEqual(simraft_kv.__version__, "0.2.2")
+        self.assertEqual(simraft_kv.__version__, "0.2.3")
         self.assertEqual(simraft_kv.version(), simraft_kv.__version__)
 
     def test_completions_cover_all_shells_for_sim_and_node(self) -> None:
@@ -193,7 +193,7 @@ class SimRaftKvSdkTests(unittest.TestCase):
         sim_bin = simraft_kv.find_binary()
         node_bin = simraft_kv.find_node_binary()
         target = "x86_64-unknown-linux-gnu"
-        tag = "v0.2.2"
+        tag = "v0.2.3"
 
         with tempfile.TemporaryDirectory(prefix="simraft-install-test-") as tmp:
             tmp_path = Path(tmp)
@@ -253,7 +253,7 @@ class SimRaftKvSdkTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(ver_proc.returncode, 0, ver_proc.stderr)
-                self.assertIn("0.2.2", ver_proc.stdout)
+                self.assertIn("0.2.3", ver_proc.stdout)
 
             # Tamper with the second archive's SHA-256 and ensure install.sh
             # fails closed (exit 1) BEFORE extracting even the first binary.

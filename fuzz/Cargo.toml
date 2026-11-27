@@ -1,0 +1,41 @@
+[package]
+name = "simraft-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+simraft-core = { path = "../simraft-core" }
+simraft-kv = { path = "../simraft-kv" }
+simraft-node = { path = "../simraft-node" }
+simraft-wire = { path = "../simraft-wire" }
+
+# Separate workspace: cargo-fuzz targets execute under nightly with sanitizers,
+# while CI compiles every target on stable Rust via `cargo check --locked --bins`.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "wire_frame"
+path = "fuzz_targets/wire_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "kv_codec"
+path = "fuzz_targets/kv_codec.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "client_protocol"
+path = "fuzz_targets/client_protocol.rs"
+test = false
+doc = false
+bench = false

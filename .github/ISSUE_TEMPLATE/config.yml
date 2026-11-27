@@ -1,5 +1,11 @@
 blank_issues_enabled: false
 contact_links:
+  - name: Published documentation site
+    url: https://david-engelmann.github.io/simraft-kv/
+    about: Browse guides, CLI and Python SDK reference, architecture, invariants, and FAQs.
+  - name: GitHub Discussions
+    url: https://github.com/david-engelmann/simraft-kv/discussions
+    about: Ask questions about embedding simraft-core, simulation seeds, or cluster setup.
   - name: Security vulnerability report
     url: https://github.com/david-engelmann/simraft-kv/security/advisories/new
     about: Report consensus safety violations, memory exhaustion bugs, or security vulnerabilities privately per SECURITY.md.
