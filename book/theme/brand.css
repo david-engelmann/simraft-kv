@@ -1,48 +1,50 @@
 :root {
-  --simraft-ink: #151411;
-  --simraft-paper: #f2eee6;
-  --simraft-card: #faf8f3;
-  --simraft-stone: #efe6d9;
-  --simraft-night: #121110;
-  --simraft-ink-warm: #e9e5dc;
-  --simraft-signal: #0f766e;
-  --simraft-signal-bright: #2dd4bf;
+  --doc-ink: #0f172a;
+  --doc-bg-light: #ffffff;
+  --doc-side-light: #f8fafc;
+  --doc-rust-bg: #f8fafc;
+  --doc-rust-side: #f1f5f9;
+  --doc-bg-dark: #0a1214;
+  --doc-side-dark: #0f1b1e;
+  --doc-ink-dark: #e2e8f0;
+  --doc-link-light: #0f766e;
+  --doc-link-dark: #2dd4bf;
 }
 
 .light {
-  --bg: var(--simraft-paper);
-  --fg: var(--simraft-ink);
-  --sidebar-bg: var(--simraft-card);
-  --sidebar-fg: var(--simraft-ink);
-  --links: var(--simraft-signal);
-  --sidebar-active: var(--simraft-signal);
+  --bg: var(--doc-bg-light);
+  --fg: var(--doc-ink);
+  --sidebar-bg: var(--doc-side-light);
+  --sidebar-fg: var(--doc-ink);
+  --links: var(--doc-link-light);
+  --sidebar-active: var(--doc-link-light);
 }
 
 .rust {
-  --bg: #f6f1e8;
-  --fg: var(--simraft-ink);
-  --sidebar-bg: var(--simraft-stone);
-  --sidebar-fg: var(--simraft-ink);
-  --links: var(--simraft-signal);
-  --sidebar-active: var(--simraft-signal);
+  --bg: var(--doc-rust-bg);
+  --fg: var(--doc-ink);
+  --sidebar-bg: var(--doc-rust-side);
+  --sidebar-fg: var(--doc-ink);
+  --links: var(--doc-link-light);
+  --sidebar-active: var(--doc-link-light);
 }
 
 .ayu, .coal {
-  --bg: var(--simraft-night);
-  --fg: var(--simraft-ink-warm);
-  --sidebar-bg: #1a1917;
-  --sidebar-fg: var(--simraft-ink-warm);
-  --links: var(--simraft-signal-bright);
-  --sidebar-active: var(--simraft-signal-bright);
+  --bg: var(--doc-bg-dark);
+  --fg: var(--doc-ink-dark);
+  --sidebar-bg: var(--doc-side-dark);
+  --sidebar-fg: var(--doc-ink-dark);
+  --links: var(--doc-link-dark);
+  --sidebar-active: var(--doc-link-dark);
 }
 
 .navy {
-  --bg: #161923;
-  --fg: var(--simraft-ink-warm);
-  --sidebar-bg: #12151e;
-  --sidebar-fg: var(--simraft-ink-warm);
-  --links: var(--simraft-signal-bright);
-  --sidebar-active: var(--simraft-signal-bright);
+  --bg: #0a1214;
+  --fg: var(--doc-ink-dark);
+  --sidebar-bg: #0f1b1e;
+  --sidebar-fg: var(--doc-ink-dark);
+  --links: var(--doc-link-dark);
+  --sidebar-active: var(--doc-link-dark);
 }
 
 body {
@@ -64,20 +66,19 @@ a {
   font-weight: 700;
 }
 
-.content h1 {
+.content h1, .content h2, .content h3 {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-weight: 650;
-  letter-spacing: -0.025em;
-}
-
-.light .theme-dark-only,
-.rust .theme-dark-only {
-  display: none;
+  letter-spacing: -0.02em;
 }
 
 .ayu .theme-light-only,
 .coal .theme-light-only,
 .navy .theme-light-only {
+  display: none;
+}
+
+.light .theme-dark-only,
+.rust .theme-dark-only {
   display: none;
 }
 
@@ -94,15 +95,6 @@ button.fa-copy {
   box-sizing: border-box;
   min-height: 44px;
   min-width: 44px;
-}
-
-a:hover,
-button:hover,
-summary:hover,
-#menu-bar .icon-button:hover,
-.theme-popup .theme:hover,
-.clip-button:hover {
-  outline: none;
 }
 
 a:focus-visible,
@@ -123,25 +115,13 @@ summary:focus-visible,
   overflow-x: auto;
 }
 
-pre,
-.mermaid {
+.content pre {
   max-width: 100%;
   overflow-x: auto;
+  border-radius: 8px;
 }
 
-.mermaid svg {
+.content img {
   max-width: 100%;
   height: auto;
-}
-
-.mermaid text {
-  fill: var(--fg);
-}
-
-@media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    transition-duration: 0.001ms !important;
-    animation-duration: 0.001ms !important;
-    scroll-behavior: auto !important;
-  }
 }
