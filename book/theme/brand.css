@@ -1,0 +1,147 @@
+:root {
+  --simraft-ink: #151411;
+  --simraft-paper: #f2eee6;
+  --simraft-card: #faf8f3;
+  --simraft-stone: #efe6d9;
+  --simraft-night: #121110;
+  --simraft-ink-warm: #e9e5dc;
+  --simraft-signal: #0f766e;
+  --simraft-signal-bright: #2dd4bf;
+}
+
+.light {
+  --bg: var(--simraft-paper);
+  --fg: var(--simraft-ink);
+  --sidebar-bg: var(--simraft-card);
+  --sidebar-fg: var(--simraft-ink);
+  --links: var(--simraft-signal);
+  --sidebar-active: var(--simraft-signal);
+}
+
+.rust {
+  --bg: #f6f1e8;
+  --fg: var(--simraft-ink);
+  --sidebar-bg: var(--simraft-stone);
+  --sidebar-fg: var(--simraft-ink);
+  --links: var(--simraft-signal);
+  --sidebar-active: var(--simraft-signal);
+}
+
+.ayu, .coal {
+  --bg: var(--simraft-night);
+  --fg: var(--simraft-ink-warm);
+  --sidebar-bg: #1a1917;
+  --sidebar-fg: var(--simraft-ink-warm);
+  --links: var(--simraft-signal-bright);
+  --sidebar-active: var(--simraft-signal-bright);
+}
+
+.navy {
+  --bg: #161923;
+  --fg: var(--simraft-ink-warm);
+  --sidebar-bg: #12151e;
+  --sidebar-fg: var(--simraft-ink-warm);
+  --links: var(--simraft-signal-bright);
+  --sidebar-active: var(--simraft-signal-bright);
+}
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+}
+
+a {
+  color: var(--links);
+}
+
+#menu-bar {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.menu-title {
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.content h1 {
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-weight: 650;
+  letter-spacing: -0.025em;
+}
+
+.light .theme-dark-only,
+.rust .theme-dark-only {
+  display: none;
+}
+
+.ayu .theme-light-only,
+.coal .theme-light-only,
+.navy .theme-light-only {
+  display: none;
+}
+
+#menu-bar .icon-button,
+#menu-bar a,
+.theme-popup .theme,
+.mobile-nav-chapters,
+.mobile-nav-chapters a,
+.clip-button,
+button.fa-copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 44px;
+  min-width: 44px;
+}
+
+a:hover,
+button:hover,
+summary:hover,
+#menu-bar .icon-button:hover,
+.theme-popup .theme:hover,
+.clip-button:hover {
+  outline: none;
+}
+
+a:focus-visible,
+button:focus-visible,
+summary:focus-visible,
+#menu-bar .icon-button:focus-visible,
+.theme-popup .theme:focus-visible,
+.clip-button:focus-visible,
+.fa-copy:focus-visible {
+  outline: 2px solid var(--links);
+  outline-offset: 2px;
+}
+
+.table-wrapper,
+.content table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+pre,
+.mermaid {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.mermaid text {
+  fill: var(--fg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.001ms !important;
+    animation-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

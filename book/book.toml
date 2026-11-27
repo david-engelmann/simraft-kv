@@ -1,0 +1,26 @@
+[book]
+title = "simraft-kv"
+authors = ["david-engelmann"]
+description = "simraft-kv: sans-I/O Raft consensus engine, deterministic chaos simulator, and linearizable key-value store in Rust. Guides, protocol specification, invariants, and CLI and Python SDK reference."
+language = "en"
+src = "src"
+
+[preprocessor.mermaid]
+command = "mdbook-mermaid"
+
+[build]
+build-dir = "build"
+
+[output.html]
+default-theme = "ayu"
+git-repository-url = "https://github.com/david-engelmann/simraft-kv"
+site-url = "/simraft-kv/"
+additional-css = ["theme/brand.css"]
+additional-js = ["mermaid.min.js", "mermaid-init.js"]
+
+# Dead-link gate: fail `mdbook build` on broken internal links. Web links are
+# not fetched (no network flakiness in CI). Adding this second renderer nests
+# the HTML output under `build/html/`, and docs.yml deploys from there.
+[output.linkcheck]
+follow-web-links = false
+warning-policy = "error"

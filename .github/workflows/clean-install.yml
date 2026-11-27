@@ -1,0 +1,41 @@
+name: Clean-Machine Install
+
+on:
+  release:
+    types: [published]
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release tag to install (defaults to latest release)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clean-install-${{ github.event.release.tag_name || inputs.version || 'latest' }}
+  cancel-in-progress: false
+
+jobs:
+  clean-install:
+    name: Install release via install.sh (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      SIMRAFT_VERSION: ${{ github.event.release.tag_name || inputs.version }}
+    steps:
+      - name: Install prebuilt binaries via install.sh (no checkout, no Rust toolchain)
+        shell: sh
+        run: |
+          set -eu
+          curl -fsSL https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/install.sh | sh
+          "$HOME/.local/bin/simraft-node" --version
+          "$HOME/.local/bin/simraft-sim" --seed 42 --seeds 2 --chaos --json
+          "$HOME/.local/bin/simraft-node" completions bash >/dev/null

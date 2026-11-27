@@ -59,8 +59,8 @@ jobs:
             exit 1
           fi
           echo "no forbidden nondeterminism identifiers"
-      - name: ShellCheck release installer
-        run: shellcheck install.sh
+      - name: ShellCheck shell scripts
+        run: shellcheck install.sh book/sync-docs.sh examples/cluster_quickstart.sh
 
   rust-gates-matrix:
     name: Rust gates (${{ matrix.os }})
@@ -93,12 +93,29 @@ jobs:
           cargo test --workspace --all-features --locked
           cargo bench --workspace --locked -- --test
           cargo run -p simraft-core --example embed --locked
+      - name: Check fuzz targets on stable Rust
+        if: matrix.os == 'ubuntu-latest'
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+          cargo check --manifest-path fuzz/Cargo.toml --locked --bins
       - name: Build simulator and node CLIs and run Python SDK tests
         shell: bash
         run: |
           cargo build --locked -p simraft-sim --bin simraft-sim
           cargo build --locked -p simraft-node --bin simraft-node
           python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
+      - name: Run top-level examples
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            python examples/chaos_sweep_and_replay.py
+            sh examples/cluster_quickstart.sh --sim-only
+          else
+            python3 examples/chaos_sweep_and_replay.py
+            sh examples/cluster_quickstart.sh --live-tcp
+          fi
 
   macos-gates:
     name: Rust gates (macos-latest)
@@ -134,6 +151,11 @@ jobs:
           cargo build --locked -p simraft-sim --bin simraft-sim
           cargo build --locked -p simraft-node --bin simraft-node
           python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
+      - name: Run top-level examples
+        shell: bash
+        run: |
+          python3 examples/chaos_sweep_and_replay.py
+          sh examples/cluster_quickstart.sh --live-tcp
 
   deny:
     name: Supply-chain audit (cargo-deny)
