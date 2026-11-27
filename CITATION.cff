@@ -1,0 +1,21 @@
+cff-version: 1.2.0
+message: "If you use SimRaft-KV in your research or engineering work, please cite this software."
+type: software
+title: "SimRaft-KV: Deterministic Simulation-Tested Raft Key-Value Store"
+version: 0.2.2
+date-released: "2026-11-27"
+license: MIT OR Apache-2.0
+repository-code: "https://github.com/david-engelmann/simraft-kv"
+url: "https://docs.rs/simraft-core"
+authors:
+  - family-names: Engelmann
+    given-names: David
+    alias: david-engelmann
+keywords:
+  - raft
+  - consensus
+  - deterministic-simulation
+  - linearizability
+  - sans-io
+  - key-value-store
+  - rust

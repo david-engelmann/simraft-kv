@@ -72,3 +72,96 @@ fn chaos_flag_runs_and_replays_deterministically() {
         "SIM_SEED must apply when --seed is omitted"
     );
 }
+
+#[test]
+fn completions_flag_prints_all_shells_and_exits_without_running_simulation() {
+    use simraft_sim::{Shell, completions_script};
+
+    let cases = [
+        (Shell::Bash, "bash", "complete -F _simraft_sim simraft-sim"),
+        (Shell::Zsh, "zsh", "#compdef simraft-sim"),
+        (Shell::Fish, "fish", "complete -c simraft-sim"),
+        (
+            Shell::PowerShell,
+            "powershell",
+            "Register-ArgumentCompleter -Native -CommandName 'simraft-sim'",
+        ),
+    ];
+
+    for (variant, name, marker) in cases {
+        assert_eq!(variant.as_str(), name);
+        assert_eq!(variant.to_string(), name);
+        assert_eq!(name.parse::<Shell>().expect("shell parses"), variant);
+
+        let first = Command::new(env!("CARGO_BIN_EXE_simraft-sim"))
+            .args(["--completions", name])
+            .output()
+            .expect("simraft-sim --completions runs");
+        assert_eq!(
+            first.status.code(),
+            Some(0),
+            "--completions {name} must exit 0: {}",
+            String::from_utf8_lossy(&first.stderr)
+        );
+        assert!(
+            first.stderr.is_empty(),
+            "--completions {name} must write nothing to stderr"
+        );
+
+        let second = Command::new(env!("CARGO_BIN_EXE_simraft-sim"))
+            .args(["--completions", name])
+            .output()
+            .expect("simraft-sim --completions replays");
+        assert_eq!(
+            first.stdout, second.stdout,
+            "--completions {name} must be byte-for-byte deterministic"
+        );
+
+        let script = String::from_utf8(first.stdout).expect("UTF-8 completion script");
+        assert_eq!(
+            script,
+            completions_script(variant),
+            "CLI stdout must match simraft_sim::completions_script({variant:?})"
+        );
+        assert!(script.contains(marker), "{name} script missing {marker:?}");
+        assert!(
+            !script.contains("\"seed\":"),
+            "--completions {name} must exit immediately without running simulation"
+        );
+
+        for flag in [
+            "--seed",
+            "--seeds",
+            "--json",
+            "--trace",
+            "--chaos",
+            "--nodes",
+            "--ticks",
+            "--completions",
+            "bash",
+            "zsh",
+            "fish",
+            "powershell",
+        ] {
+            assert!(
+                script.contains(flag),
+                "{name} completion script missing {flag:?}"
+            );
+        }
+    }
+
+    assert!("nushell".parse::<Shell>().is_err());
+    let bad = Command::new(env!("CARGO_BIN_EXE_simraft-sim"))
+        .args(["--completions", "nushell"])
+        .output()
+        .expect("run simraft-sim with invalid shell");
+    assert_eq!(
+        bad.status.code(),
+        Some(2),
+        "invalid --completions shell must exit 2"
+    );
+    assert!(
+        bad.stdout.is_empty(),
+        "invalid shell must write nothing to stdout"
+    );
+}

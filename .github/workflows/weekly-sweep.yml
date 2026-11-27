@@ -47,7 +47,7 @@ jobs:
           done
 
   scenario-sweep:
-    name: Lane 2 scenarios, wide seed batches
+    name: Adversarial fault scenarios, wide seed batches
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:

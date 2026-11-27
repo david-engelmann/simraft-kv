@@ -8,7 +8,7 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use simraft_sim::{FaultConfig, Harness, SimConfig};
+use simraft_sim::{FaultConfig, Harness, Shell, SimConfig, completions_script};
 
 /// Deterministic simulation runs for simraft-kv.
 #[derive(Debug, Parser)]
@@ -38,10 +38,17 @@ struct Args {
     /// chaos and healing phases.
     #[arg(long, default_value_t = 8_000)]
     ticks: u64,
+    /// Print static shell completions for `bash`, `zsh`, `fish`, or `powershell` and exit.
+    #[arg(long, value_enum, value_name = "SHELL")]
+    completions: Option<Shell>,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
+    if let Some(shell) = args.completions {
+        print!("{}", completions_script(shell));
+        return ExitCode::SUCCESS;
+    }
     let base_seed = args.seed.unwrap_or_else(|| {
         std::env::var("SIM_SEED")
             .ok()

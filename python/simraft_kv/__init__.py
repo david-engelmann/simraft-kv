@@ -25,6 +25,7 @@ __all__ = [
     "SimRaftClient",
     "SimRaftError",
     "SweepSummary",
+    "completions",
     "decode_client_response",
     "encode_client_request",
     "find_binary",
@@ -34,7 +35,7 @@ __all__ = [
     "version",
 ]
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 PathInput = str | os.PathLike[str]
 
@@ -162,29 +163,39 @@ def _find_executable(
     exe_names = (
         (f"{bin_name}.exe", bin_name) if os.name == "nt" else (bin_name,)
     )
-    search_dirs: list[Path] = []
-    scripts_dir = sysconfig.get_path("scripts")
-    if scripts_dir:
-        search_dirs.append(Path(scripts_dir))
-    py_dir = Path(sys.executable).resolve().parent
-    search_dirs.extend([py_dir, py_dir / "Scripts", py_dir / "bin"])
-
     repo_root = Path(__file__).resolve().parents[2]
     cwd = Path.cwd()
-    search_dirs.extend(
-        [
-            repo_root / "target" / "release",
-            repo_root / "target" / "debug",
-            cwd / "target" / "release",
-            cwd / "target" / "debug",
-        ]
-    )
+    in_source_checkout = (repo_root / "Cargo.toml").is_file()
 
-    for directory in search_dirs:
+    target_candidates: list[Path] = []
+    for base in (repo_root, cwd):
+        for profile in ("release", "debug"):
+            for name in exe_names:
+                candidate = base / "target" / profile / name
+                if candidate.is_file() and candidate not in target_candidates:
+                    target_candidates.append(candidate)
+    target_candidates.sort(key=lambda p: p.stat().st_mtime_ns, reverse=True)
+
+    env_dirs: list[Path] = []
+    scripts_dir = sysconfig.get_path("scripts")
+    if scripts_dir:
+        env_dirs.append(Path(scripts_dir))
+    py_dir = Path(sys.executable).resolve().parent
+    env_dirs.extend([py_dir, py_dir / "Scripts", py_dir / "bin"])
+    env_candidates: list[Path] = []
+    for directory in env_dirs:
         for name in exe_names:
             candidate = directory / name
-            if candidate.is_file():
-                return candidate
+            if candidate.is_file() and candidate not in env_candidates:
+                env_candidates.append(candidate)
+
+    ordered = (
+        [*target_candidates, *env_candidates]
+        if in_source_checkout
+        else [*env_candidates, *target_candidates]
+    )
+    if ordered:
+        return ordered[0]
 
     found = shutil.which(bin_name)
     if found:
@@ -639,6 +650,54 @@ def version(*, binary: PathInput | None = None) -> str:
         )
     parts = proc.stdout.strip().split()
     return parts[-1] if parts else proc.stdout.strip()
+
+
+_SUPPORTED_SHELLS = ("bash", "zsh", "fish", "powershell")
+_SUPPORTED_TOOLS = ("simraft-sim", "simraft-node")
+
+
+def completions(
+    shell: str = "bash",
+    *,
+    tool: str = "simraft-sim",
+    binary: PathInput | None = None,
+) -> str:
+    """Return the deterministic shell completion script for ``tool`` in ``shell``."""
+    if not isinstance(shell, str):
+        raise TypeError(f"shell must be str, got {type(shell).__name__}")
+    if not isinstance(tool, str):
+        raise TypeError(f"tool must be str, got {type(tool).__name__}")
+    shell_norm = shell.strip().lower()
+    if shell_norm not in _SUPPORTED_SHELLS:
+        raise ValueError(
+            f"unsupported shell {shell!r}; expected 'bash', 'zsh', 'fish', or 'powershell'"
+        )
+    tool_norm = tool.strip()
+    if tool_norm not in _SUPPORTED_TOOLS:
+        raise ValueError(
+            f"unsupported tool {tool!r}; expected 'simraft-sim' or 'simraft-node'"
+        )
+    if tool_norm == "simraft-sim":
+        exe = find_binary(binary)
+        cmd = [str(exe), "--completions", shell_norm]
+    else:
+        exe = find_node_binary(binary)
+        cmd = [str(exe), "completions", shell_norm]
+
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise SimRaftError(
+            proc.stderr.strip()
+            or f"failed to generate {tool_norm} {shell_norm} completions",
+            exit_code=proc.returncode,
+        )
+    return proc.stdout
 
 
 def _parse_seed_report(raw_json: str) -> SeedReport:

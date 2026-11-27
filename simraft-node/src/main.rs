@@ -1,11 +1,12 @@
 //! The `simraft-node` binary: `serve` runs one Raft cluster node in
-//! the foreground, and `client` issues one linearizable key-value
-//! operation against a cluster member.
+//! the foreground, `client` issues one linearizable key-value
+//! operation against a cluster member, and `completions` prints a
+//! static shell completion script.
 //!
 //! Exit codes:
 //! - `0`: the node exited cleanly, a write (`put` or `delete`)
-//!   committed and printed `ok`, or `get` found the key and printed
-//!   its value.
+//!   committed and printed `ok`, `get` found the key and printed
+//!   its value, or `completions` printed a completion script.
 //! - `1`: `client get <key>` confirmed linearizably that `<key>` is
 //!   absent from the store (prints `simraft-node: key not found` to
 //!   stderr and nothing to stdout).
@@ -20,7 +21,9 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use simraft_core::NodeId;
-use simraft_node::{ClientOp, MemberConfig, NodeConfig, run_client, run_node};
+use simraft_node::{
+    ClientOp, MemberConfig, NodeConfig, Shell, completions_script, run_client, run_node,
+};
 
 #[derive(Parser)]
 #[command(
@@ -39,6 +42,15 @@ enum Command {
     Serve(ServeArgs),
     /// Issue one linearizable client operation against a member.
     Client(ClientArgs),
+    /// Print static shell completions for `bash`, `zsh`, `fish`, or `powershell`.
+    Completions(CompletionsArgs),
+}
+
+#[derive(Args)]
+struct CompletionsArgs {
+    /// Target shell (`bash`, `zsh`, `fish`, or `powershell`).
+    #[arg(value_enum, value_name = "SHELL")]
+    shell: Shell,
 }
 
 #[derive(Args)]
@@ -99,6 +111,10 @@ fn main() -> ExitCode {
             }
         },
         Command::Client(args) => client(args),
+        Command::Completions(args) => {
+            print!("{}", completions_script(args.shell));
+            ExitCode::SUCCESS
+        }
     }
 }
 

@@ -13,14 +13,14 @@ env:
 
 jobs:
   scratch-project:
-    name: Crates.io library smoke (0.2.1)
+    name: Crates.io library smoke (0.2.2)
     runs-on: ubuntu-latest
     steps:
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.100.0"
-      - name: Build and run scratch crate against crates.io 0.2.1
+      - name: Build and run scratch crate against crates.io 0.2.2
         shell: bash
         run: |
           set -euo pipefail
@@ -28,7 +28,7 @@ jobs:
           rm -rf "$scratch"
           cargo new --bin "$scratch"
           cd "$scratch"
-          cargo add simraft-core@=0.2.1 simraft-kv@=0.2.1 simraft-wire@=0.2.1
+          cargo add simraft-core@=0.2.2 simraft-kv@=0.2.2 simraft-wire@=0.2.2
           cat > src/main.rs <<'RS'
           use std::collections::VecDeque;
 
@@ -123,35 +123,35 @@ jobs:
           cargo run --release
 
   install-cli:
-    name: Crates.io CLI install (0.2.1)
+    name: Crates.io CLI install (0.2.2)
     runs-on: ubuntu-latest
     steps:
       - name: Install pinned toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: "1.100.0"
-      - name: Install simraft-sim and simraft-node 0.2.1 and run chaos smoke
+      - name: Install simraft-sim and simraft-node 0.2.2 and run chaos smoke
         shell: bash
         run: |
           set -euo pipefail
           install_root="$RUNNER_TEMP/simraft-install"
           rm -rf "$install_root"
-          cargo install simraft-sim simraft-node --version 0.2.1 --locked --root "$install_root"
-          "$install_root/bin/simraft-sim" --version | grep -F "0.2.1"
-          "$install_root/bin/simraft-node" --version | grep -F "0.2.1"
+          cargo install simraft-sim simraft-node --version 0.2.2 --locked --root "$install_root"
+          "$install_root/bin/simraft-sim" --version | grep -F "0.2.2"
+          "$install_root/bin/simraft-node" --version | grep -F "0.2.2"
           out="$("$install_root/bin/simraft-sim" --seed 912 --seeds 1 --chaos --json)"
           echo "$out"
           python3 -c 'import json, sys; d = json.loads(sys.argv[1]); assert d["passed"] is True and d["verdict"] == "linearizable", d' "$out"
 
   install-pypi:
-    name: PyPI install and SDK smoke (0.2.1)
+    name: PyPI install and SDK smoke (0.2.2)
     runs-on: ubuntu-latest
     steps:
       - name: Set up Python 3.12
         uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Install simraft-kv==0.2.1 from PyPI and verify SDK
+      - name: Install simraft-kv==0.2.2 from PyPI and verify SDK
         shell: bash
         run: |
           set -euo pipefail
@@ -159,13 +159,13 @@ jobs:
           rm -rf "$venv"
           python -m venv "$venv"
           "$venv/bin/python" -m pip install --upgrade pip
-          "$venv/bin/python" -m pip install "simraft-kv==0.2.1"
+          "$venv/bin/python" -m pip install "simraft-kv==0.2.2"
           "$venv/bin/python" - <<'PY'
           import struct
           import simraft_kv
 
-          assert simraft_kv.__version__ == "0.2.1", simraft_kv.__version__
-          assert simraft_kv.version() == "0.2.1"
+          assert simraft_kv.__version__ == "0.2.2", simraft_kv.__version__
+          assert simraft_kv.version() == "0.2.2"
 
           summary = simraft_kv.simulate(seed=912, seeds=2, chaos=True)
           assert summary.all_passed, summary
@@ -185,5 +185,5 @@ jobs:
           redir = simraft_kv.decode_client_response(redir_body)
           assert redir.status == "redirect"
           assert redir.leader_hint == "127.0.0.1:7002"
-          print("install-pypi ok: simraft-kv==0.2.1 verified")
+          print("install-pypi ok: simraft-kv==0.2.2 verified")
           PY

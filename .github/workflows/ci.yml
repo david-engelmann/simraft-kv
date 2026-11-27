@@ -59,6 +59,8 @@ jobs:
             exit 1
           fi
           echo "no forbidden nondeterminism identifiers"
+      - name: ShellCheck release installer
+        run: shellcheck install.sh
 
   rust-gates-matrix:
     name: Rust gates (${{ matrix.os }})
@@ -133,16 +135,29 @@ jobs:
           cargo build --locked -p simraft-node --bin simraft-node
           python3 -m unittest discover -s python/tests -v || python -m unittest discover -s python/tests -v
 
+  deny:
+    name: Supply-chain audit (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Install cargo-deny
+        uses: taiki-e/install-action@75a7c0f87bd666af3cdb75c5b9e9d03ab6044e6f # v2.90.6
+        with:
+          tool: cargo-deny
+      - name: Run cargo-deny check
+        run: cargo deny check
+
   rust-gates:
     name: Rust gates (fmt, clippy, doc, test, bench smoke)
-    needs: [rust-gates-matrix, msrv]
+    needs: [rust-gates-matrix, msrv, deny]
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - name: Require all OS and MSRV gates green
+      - name: Require all OS, MSRV, and supply-chain gates green
         run: |
           test "${{ needs.rust-gates-matrix.result }}" = "success"
           test "${{ needs.msrv.result }}" = "success"
+          test "${{ needs.deny.result }}" = "success"
 
   msrv:
     name: MSRV 1.88 check
