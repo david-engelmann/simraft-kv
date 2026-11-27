@@ -183,3 +183,10 @@ benchmarks in `.github/workflows/ci.yml` and
 `main` run `PROPTEST_CASES=10000` and 10,000 `--chaos` seeds, and
 weekly sweeps run 100,000 `--chaos` seeds plus widened Lane 2
 scenario sweeps.
+
+## 13. Launch and release surfaces
+
+| ID | Invariant | Enforced by | Milestone |
+| X-01 | SDK contract (INT): the Python SDK's report parsing matches the simulator CLI's JSON output field for field (seed, completed, converged, leader_converged, ticks, verdict, digest, passed), and its failure handling matches the CLI's exit codes, success only when every seed passes. | Tests `python/tests/test_sdk.py`, audited field by field against `simraft-sim/src/main.rs` in R-10. CI wiring for the Python tests is P-1's pending sub-approval; until it lands, this row's enforcer runs outside CI. | Post-launch P-2 |
+| X-02 | Version parity (REL): the workspace crate versions and the Python package version in `pyproject.toml` are equal at any commit the publish workflow runs on. | The parity step in `.github/workflows/publish.yml`, proven to reject a planted mismatch in P-3: the scratch run's package job failed at the parity step and the publish job was skipped. | Post-launch P-2 |
+| X-03 | Publish discipline (REL): crates publish to crates.io in topological order (core, wire, kv, node, sim), a version already on the index is skipped rather than republished, and the publisher waits for index visibility before continuing to the next crate. | The publish script in `.github/workflows/publish.yml`. Evidence: the two v0.2.0 tag runs, the first failed at OIDC authentication and the second completed the set without republishing. | Post-launch P-2 |
