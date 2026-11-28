@@ -1,11 +1,11 @@
 # simraft-kv Roadmap and Delivery History
 
-This document tracks the delivered milestones, engineering lanes, and
+This document tracks the delivered milestones, workstreams, and
 point releases across all five workspace crates (`simraft-core`,
 `simraft-wire`, `simraft-kv`, `simraft-node`, and `simraft-sim`) as
 well as the Python SDK (`simraft-kv` on PyPI).
 
-Every core milestone and engineering lane landed in two stages. Stage
+Every core milestone and workstream landed in two stages. Stage
 A introduced the public interfaces and failing tests, and Stage B
 implemented the minimal design that passed those tests and
 synchronized `docs/ARCHITECTURE.md` and `docs/INVARIANTS.md` to the
@@ -75,7 +75,7 @@ code as built.
   safety oracles, Wing and Gong per-key linearizability checking,
   and automated CI seed sweeps.
 
-### Lane 1 (`simraft-wire` and `simraft-node`)
+### Production adapter (`simraft-wire` and `simraft-node`)
 
 - Extracted `simraft-wire` so the simulator and live TCP adapter
   share one 16 MiB bounded CRC-32 frame codec.
@@ -84,7 +84,7 @@ code as built.
   `A-06`), bounded channels and socket timeouts, and the `serve` and
   `client` CLI subcommands (`A-01` through `A-04`).
 
-### Lane 2 (Adversarial simulation depth)
+### Adversarial simulation depth
 
 - Added in-flight wire bit-flip corruption (`H-04`), durable log
   corruption truncation (`H-05`), durable snapshot corruption
@@ -93,7 +93,7 @@ code as built.
   under load (`H-09`), the `--chaos` fault profile on `simraft-sim`,
   and the 100,000-seed weekly chaos sweep.
 
-### Lane 3 (Performance and resource bounds)
+### Performance and resource bounds
 
 - Coalesced held leader `AppendEntries` sends per follower on
   persist acknowledgment (`B-02`), added 10,000-entry follower
@@ -102,7 +102,7 @@ code as built.
   `step_allocations` to `APPEND_BUDGET = 7` (`L-03`), and enforced
   commit latency bounds (`L-02`).
 
-### Lane 4 (Operability and embedding)
+### Operability and embedding
 
 - Shipped `Node::stats` (`O-01`) for read-only inspection of role,
   term, leader, log cursors, and peer replication progress, and
