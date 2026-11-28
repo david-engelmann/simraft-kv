@@ -97,7 +97,7 @@ See [`simraft-core/examples/embed.rs`](https://github.com/david-engelmann/simraf
 # Prebuilt Linux / macOS binaries (simraft-node + simraft-sim) verified against SHA256SUMS
 curl -fsSL https://raw.githubusercontent.com/david-engelmann/simraft-kv/main/install.sh | sh
 
-# Python 3.9+ SDK + bundled binaries
+# Python 3.10+ SDK + bundled binaries
 pip install simraft-kv
 
 # Cargo / cargo-binstall
@@ -119,13 +119,16 @@ simraft-sim --seed 912 --seeds 1 --chaos --trace
 ### Operate a three-node localhost TCP cluster
 
 ```sh
-simraft-node serve --id 1 --listen 127.0.0.1:7001 --client-listen 127.0.0.1:8001 --peer 2=127.0.0.1:7002 --peer 3=127.0.0.1:7003 --data-dir /tmp/sr-1 &
-simraft-node serve --id 2 --listen 127.0.0.1:7002 --client-listen 127.0.0.1:8002 --peer 1=127.0.0.1:7001 --peer 3=127.0.0.1:7003 --data-dir /tmp/sr-2 &
-simraft-node serve --id 3 --listen 127.0.0.1:7003 --client-listen 127.0.0.1:8003 --peer 1=127.0.0.1:7001 --peer 2=127.0.0.1:7002 --data-dir /tmp/sr-3 &
+simraft-node serve --id 1 --data-dir /tmp/sr-1 \
+  --member 1@127.0.0.1:7001 --member 2@127.0.0.1:7002 --member 3@127.0.0.1:7003 &
+simraft-node serve --id 2 --data-dir /tmp/sr-2 \
+  --member 1@127.0.0.1:7001 --member 2@127.0.0.1:7002 --member 3@127.0.0.1:7003 &
+simraft-node serve --id 3 --data-dir /tmp/sr-3 \
+  --member 1@127.0.0.1:7001 --member 2@127.0.0.1:7002 --member 3@127.0.0.1:7003 &
 
-simraft-node client --server 127.0.0.1:8001 put config/epoch 7
-simraft-node client --server 127.0.0.1:8002 get config/epoch   # follower redirect -> linearizable ReadIndex read
-simraft-node client --server 127.0.0.1:8003 delete config/epoch
+simraft-node client --server 127.0.0.1:7001 put config/epoch 7
+simraft-node client --server 127.0.0.1:7002 get config/epoch   # follower redirect -> linearizable ReadIndex read
+simraft-node client --server 127.0.0.1:7003 delete config/epoch
 ```
 
 ### Drive both from Python (`simraft_kv`)
@@ -137,7 +140,7 @@ sweep = simraft_kv.simulate(seed=912, seeds=5, chaos=True)
 assert sweep.all_passed
 
 client = simraft_kv.SimRaftClient(
-    ["127.0.0.1:8001", "127.0.0.1:8002", "127.0.0.1:8003"],
+    ["127.0.0.1:7001", "127.0.0.1:7002", "127.0.0.1:7003"],
     timeout=10.0,
 )
 client.put("task/owner", "worker-1")
